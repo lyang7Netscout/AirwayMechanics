@@ -199,6 +199,14 @@ namespace Step44
         prm.declare_entry("Shear modulus", "80.194e6",
                           Patterns::Double(),
                           "Shear modulus");
+                          
+        prm.declare_entry("k1", "5e7",
+                          Patterns::Double(),
+                          "Fiber density");
+                                  
+        prm.declare_entry("k2", "0.5",
+                          Patterns::Double(),
+                         "Fiber strength");)
       }
       prm.leave_subsection();
     }
@@ -209,8 +217,8 @@ namespace Step44
       {
         nu = prm.get_double("Poisson's ratio");
         mu = prm.get_double("Shear modulus");
-        k1 = 5e7;//prm.get_double("k1");
-        k2 = 0.5;//prm.get_double("k2");
+        k1 = prm.get_double("k1");
+        k2 = prm.get_double("k2");
 //        M[0] = 1;
 //        M[1] = 0;
 //        M[2] = 0;
