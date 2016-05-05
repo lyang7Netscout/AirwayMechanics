@@ -178,6 +178,7 @@ namespace Step44
       double mu;
       double k1;
       double k2;
+      double z_angle;
       Tensor<1, 3> M;
 
       static void
@@ -198,6 +199,18 @@ namespace Step44
         prm.declare_entry("Shear modulus", "80.194e6",
                           Patterns::Double(),
                           "Shear modulus");
+
+	prm.declare_entry("k1", "1e7",
+	                  Patterns::Double(),
+			  "Fiber density");
+
+	prm.declare_entry("k2", "0.5",
+	                  Patterns::Double(),
+			  "Fiber strength");
+
+	prm.declare_entry("z_angle", "0.5235987",
+	                  Patterns::Double(),
+			  "fiber orientation, angle away from cross-section to axial");
       }
       prm.leave_subsection();
     }
@@ -208,8 +221,9 @@ namespace Step44
       {
         nu = prm.get_double("Poisson's ratio");
         mu = prm.get_double("Shear modulus");
-        k1 = 50000000;//prm.get_double("k1");
-        k2 = 0.5;//prm.get_double("k2");
+        k1 = prm.get_double("k1");
+        k2 = prm.get_double("k2");
+	z_angle = prm.get_double("z_angle");
 //        M[0] = 1;
 //        M[1] = 0;
 //        M[2] = 0;
@@ -675,7 +689,7 @@ namespace Step44
       {
         Tensor<4,dim> tmp1 = StandardTensors<dim>::dev_P; 
         Tensor<2,dim> tmp2 = get_tau_bar4();
-        Tensor<2,dim> tmp = double_contract<3,1,4,2>(tmp1,tmp2); 
+        Tensor<2,dim> tmp = double_contract<2,0,3,1>(tmp1,tmp2); 
         return  tmp;
       }
 
@@ -742,8 +756,8 @@ namespace Step44
       Tensor<4, dim> c_bar4 = get_c_bar4();
 
       Tensor<4, dim> any_dev_P = StandardTensors<dim>::dev_P;
-      Tensor<4, dim> first_contraction = double_contract<3,1,4,2>(c_bar4, any_dev_P);
-      Tensor<4, dim> second_contraction = double_contract<3,1,4,2>(any_dev_P, first_contraction);
+      Tensor<4, dim> first_contraction = double_contract<2,0,3,1>(c_bar4, any_dev_P);
+      Tensor<4, dim> second_contraction = double_contract<2,0,3,1>(any_dev_P, first_contraction);
           return (2.0 / 3.0) * trace(tau_bar4)
             * any_dev_P
             - (2.0 / 3.0) * (tau_iso4_x_I + I_x_tau_iso4)
@@ -1775,7 +1789,7 @@ namespace Step44
                                       dsp,
                                       constraints,
                                       false);
-      sparsity_pattern.copy_from(csp);
+      sparsity_pattern.copy_from(dsp);
     }
 
     tangent_matrix.reinit(sparsity_pattern);
@@ -1880,9 +1894,9 @@ namespace Step44
         Tensor<1,dim> M_par;                                      
         for (unsigned int q_point = 0; q_point < n_q_points; ++q_point){
             //std::cout<<points[q_point](0)<<" "<<points[q_point](1)<<std::endl;
-            M_par[0] = -points[q_point](1)/sqrt(points[q_point](1)*points[q_point](1)+points[q_point](0)*points[q_point](0));
-            M_par[1] = points[q_point](0)/sqrt(points[q_point](1)*points[q_point](1)+points[q_point](0)*points[q_point](0));
-            M_par[2] = 0;         
+            M_par[0] = -cos(parameters.z_angle)*points[q_point](1)/sqrt(points[q_point](1)*points[q_point](1)+points[q_point](0)*points[q_point](0));
+            M_par[1] = cos(parameters.z_angle)*points[q_point](0)/sqrt(points[q_point](1)*points[q_point](1)+points[q_point](0)*points[q_point](0));
+            M_par[2] = sin(parameters.z_angle);         
             //std::cout<<M_par[0]<<" "<<M_par[1]<<std::endl;    
             lqph[q_point].setup_lqp(parameters,M_par);
         }
@@ -2399,9 +2413,9 @@ namespace Step44
                   {
                     Tensor<2,dim> tmp = symm_grad_Nx[i];
                     Tensor<4,dim> tmp_Jc = Jc;
-                    Tensor<2,dim> tmp2 = double_contract<1,1,2,2>(tmp, tmp_Jc);
+                    Tensor<2,dim> tmp2 = double_contract<0,0,1,1>(tmp, tmp_Jc);
                     Tensor<2,dim> tmp3 = symm_grad_Nx[j];
-                    double tmp4 = double_contract<1,1,2,2>(tmp2, tmp3);
+                    double tmp4 = double_contract<0,0,1,1>(tmp2, tmp3);
                     data.cell_matrix(i, j) += tmp4 // The material contribution:
                                                * JxW;
 //                    data.cell_matrix(i, j) += symm_grad_Nx[i] * Jc // The material contribution:
@@ -3395,8 +3409,8 @@ int main (int argc, char *argv[])
   SymmetricTensor<4,3,double> s4_tensor = outer_product(s2_tensorA,s2_tensorB);
   Tensor<4,3,double> tensor4 = outer_product(tensorA2, tensorB2);
   double s_tensor_contraction = s2_tensorA*s4_tensor*s2_tensorA;
-  Tensor<2,3,double> tensor_contraction1 = double_contract<3,1,4,2>(tensor4, tensorA2);
-  double tensor_contraction2 = double_contract<1,1,2,2>(tensorA2,tensor_contraction1);
+  Tensor<2,3,double> tensor_contraction1 = double_contract<2,0,3,1>(tensor4, tensorA2);
+  double tensor_contraction2 = double_contract<0,0,1,1>(tensorA2,tensor_contraction1);
   std::cout<<"rank 4 symmetric tensor contracted with rank 2 symmetric tensor..."<<s_tensor_contraction<<std::endl;
 //  std::cout<<s_tensor_contraction[2][0][0][0]<<" "<<s_tensor_contraction[2][0][0][1]<<" "<<s_tensor_contraction[2][0][0][2]<<std::endl;
 //  std::cout<<s_tensor_contraction[2][0][1][0]<<" "<<s_tensor_contraction[2][0][1][1]<<" "<<s_tensor_contraction[2][0][1][2]<<std::endl;
