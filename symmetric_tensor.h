@@ -1222,6 +1222,10 @@ namespace internal
     return Tensor<2,3,Number>(t);
   }
   
+  /*Author:Le Yang
+  The following function is added to enable conversion from SymmetricTensor<4,3> to Tensor<4,3>
+  */
+  
   template <typename Number>
   inline
   Tensor<4,3,Number>
