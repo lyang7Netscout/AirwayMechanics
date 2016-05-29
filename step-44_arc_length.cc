@@ -1,3 +1,10 @@
+/*Reference: 
+/*1)Crisfield(1981) 
+/*2)Ritto-Correa(2008) On the arc-length and other quadratic control methods:
+                     Established, less known and new implementation procedures */
+/*3)matlab implementation */
+
+
 /* Authors: Jean-Paul Pelteret, University of Cape Town,            */
 /*          Andrew McBride, University of Erlangen-Nuremberg, 2010  */
 /*                                                                  */
@@ -20,6 +27,7 @@
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/symmetric_tensor.h>
 #include <deal.II/base/tensor.h>
+
 #include <deal.II/base/timer.h>
 #include <deal.II/base/work_stream.h>
 
@@ -1022,7 +1030,7 @@ namespace Step44
                                        // the function that solves the
                                        // linearized Newton-Raphson step:
       void
-      solve_nonlinear_timestep(BlockVector<double> & solution_delta);
+      solve_nonlinear_timestep(BlockVector<double> & solution_delta, double arc_length0);
 
       std::pair<unsigned int, double>
       solve_linear_system(BlockVector<double> & newton_update);
@@ -1307,7 +1315,7 @@ namespace Step44
                                          // $\mathbf{\Xi}_{\textrm{n}} =
                                          // \mathbf{\Xi}_{\textrm{n-1}} +
                                          // \varDelta \mathbf{\Xi}$...
-        solve_nonlinear_timestep(solution_delta);
+        solve_nonlinear_timestep(solution_delta, arc_length0);
         solution_n += solution_delta;
 
                                          // ...and plot the results before
@@ -1959,7 +1967,10 @@ namespace Step44
     std::cout << std::endl << "Timestep " << time.get_timestep() << " @ "
               << time.current() << "s" << std::endl;
 
-    BlockVector<double> newton_update(dofs_per_block);
+    BlockVector<double> Delta_u(dofs_per_block);
+    BlockVector<double> Delta_uR(dofs_per_block);
+    BlockVector<double> Delta_uQ(dofs_per_block);
+    double load_delta;
 
     error_residual.reset();
     error_residual_0.reset();
@@ -1991,22 +2002,10 @@ namespace Step44
                                      // assembling the tangent matrix when
                                      // convergence is attained.
     unsigned int newton_iteration = 0;
-    load_update = get_guess_load(arc_length_0);
-    arc_length_res = arc_length_0;
     for (; newton_iteration < parameters.max_iterations_NR;
          ++newton_iteration)
       {
         std::cout << " " << std::setw(2) << newton_iteration << " " << std::flush;
-
-        tangent_matrix = 0.0;
-        system_rhs = 0.0;
-
-        assemble_system_rhs(load);
-        get_error_residual(error_residual);
-
-        if (newton_iteration == 0)
-          error_residual_0 = error_residual;
-
                                          // We can now determine the
                                          // normalised residual error and
                                          // check for solution convergence:
@@ -2020,6 +2019,8 @@ namespace Step44
 
             break;
           }
+        tangent_matrix = 0.0;
+        system_rhs = 0.0;
 
                                          // If we have decided that we want to
                                          // continue with the iteration, we
@@ -2029,35 +2030,45 @@ namespace Step44
                                          // system:
         assemble_system_tangent();
         make_constraints(newton_iteration);
+        
+        assemble_system_rhs(R/*out of balance load*/);
         constraints.condense(tangent_matrix, system_rhs);
+        get_error_residual(error_residual);
+        if (newton_iteration == 0)
+          error_residual_0 = error_residual;
+        lin_solver_output = solve_linear_system(Delta_uR);
+        
+        assemble_system_rhs(Q/*-dR/dlamba*/);
+        constraints.condense(tangent_matrix, system_rhs);
+        lin_solver_output = solve_linear_system(Delta_uQ);
 
-        //bisect to find proper load
-        //since the tangent matrix remains the same, only need to reassemble rhs
-        load_update_low = 0.0;
-        load_update_high = 100.0;
-        while( abs(arc_length - arc_length0) > 1e-6 ){
-            const std::pair<unsigned int, double>
-              lin_solver_output = solve_linear_system(newton_update);
-              //sometimes, at some location, tangent matrix becomes negative
-              //and newton_update might be negative too.
-          
-            arc_length = calculate_arc_length(newton_update, load_update);
-            if(arc_length > arc_length_res + 1e-6){
-                load_update_high = load_update;
-                load_update = (load_update_low + load_update_high)/2;
-                assemble_system_rhs(load + load_update);
-            }else if(arc_length < arc_length_res - 1e-6){
-                load_update_low = load_update;
-                load_update = (load_update_low + load_update_high)/2;
-                assemble_system_rhs(load + load_update);
+        {
+            a = Delta_uQ * Delta_uQ + 1;
+            b = 2*Delta_uQ * (solution_delta + Delta_uR) + 2*load_delta;
+            c = (solution_delta + Delta_uR) * (solution_delta + Delta_uR) + load_delta*load_delta - arc_length0*arc_length0;
+            if (b^2 - a*c > 0){
+                Delta_lambda = [(-b-sqrt(b^2-a*c))/a, (-b+sqrt(b^2+a*c))/a];
+                Delta_u = [Delta_uR + Delta_lambda(1)*Delta_uQ, Delta_uR + Delta_lambda(2)*Delta_uQ];
+                up1 = [current_u + Delta_u(:,1) - up, current_u + Delta_u(:,2) -up];
+                cosines = [up*up1(:,1)/abs(up*up1(:,1), up*up1(:,2)/abs(up*up1(:,2)];
+                if (cosines[1] > cosines[2]){
+                    Delta_lambda = Delta_lambda[1];
+                    Delta_u = Delta_u[1];
+                } else {
+                    Delta_lambda = Delta_lambda[2];
+                    Delta_u = Delta_u[2];
+                }
+            } else {
+                Delta_lambda = -b/a;
+                Delta_u = Delta_uR + Delta_lambda*Delta_uQ;
             }
         }
+
         //at the end of the while loop, we simutaneously find 1)load and 2)incremental deformation 
         //that will give the arc length 
-        load += load_update;
-        arc_length_res -= calculate_arc_length(newton_update, current_rhs);
 
-        solution_delta += newton_update;
+        solution_delta += Delta_u;
+        load_delta += Delta_lambda;
         update_qph_incremental(solution_delta);
 
         std::cout << " | " << std::fixed << std::setprecision(3) << std::setw(7)
