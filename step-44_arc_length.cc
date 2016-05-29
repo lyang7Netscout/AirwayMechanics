@@ -1,5 +1,5 @@
-/*Reference: 
-/*1)Crisfield(1981) 
+/*Reference:                                                        */
+/*1)Crisfield(1981)                                                 */
 /*2)Ritto-Correa(2008) On the arc-length and other quadratic control methods:
                      Established, less known and new implementation procedures */
 /*3)matlab implementation */
@@ -2012,7 +2012,7 @@ namespace Step44
         error_residual_norm = error_residual;
         error_residual_norm.normalise(error_residual_0);
 
-        if (newton_iteration > 0 && arc_length_res < parameters.tol_arc_length)
+        if (newton_iteration > 0 && res_load < parameters.tol_res_load)
           {
             std::cout << " CONVERGED! " << std::endl;
             print_conv_footer();
@@ -2031,32 +2031,39 @@ namespace Step44
         assemble_system_tangent();
         make_constraints(newton_iteration);
         
-        assemble_system_rhs(R/*out of balance load*/);
+        assemble_system_rhs(false/*out of balance load*/);
         constraints.condense(tangent_matrix, system_rhs);
         get_error_residual(error_residual);
         if (newton_iteration == 0)
           error_residual_0 = error_residual;
         lin_solver_output = solve_linear_system(Delta_uR);
         
-        assemble_system_rhs(Q/*-dR/dlamba*/);
+        assemble_system_rhs(true/*Q = -dR/dlamba*/);
         constraints.condense(tangent_matrix, system_rhs);
         lin_solver_output = solve_linear_system(Delta_uQ);
 
         {
-            a = Delta_uQ * Delta_uQ + 1;
-            b = 2*Delta_uQ * (solution_delta + Delta_uR) + 2*load_delta;
-            c = (solution_delta + Delta_uR) * (solution_delta + Delta_uR) + load_delta*load_delta - arc_length0*arc_length0;
+            a = Delta_uQ.block(u_dof).l2_norm() + 1;
+            BlockVector<double> tmp = solution_delta + Delta_uR;
+            b = 2*Delta_uQ.block(u_dof) * tmp.block(u_dof) + 2*load_delta;            
+            c = tmp.block(u_dof).l2_norm() + load_delta*load_delta - arc_length0*arc_length0;
             if (b^2 - a*c > 0){
-                Delta_lambda = [(-b-sqrt(b^2-a*c))/a, (-b+sqrt(b^2+a*c))/a];
-                Delta_u = [Delta_uR + Delta_lambda(1)*Delta_uQ, Delta_uR + Delta_lambda(2)*Delta_uQ];
-                up1 = [current_u + Delta_u(:,1) - up, current_u + Delta_u(:,2) -up];
-                cosines = [up*up1(:,1)/abs(up*up1(:,1), up*up1(:,2)/abs(up*up1(:,2)];
-                if (cosines[1] > cosines[2]){
-                    Delta_lambda = Delta_lambda[1];
-                    Delta_u = Delta_u[1];
+                std::pair<double> Delta_lambda_pair = std::make_pair((-b-sqrt(b^2-a*c))/a, (-b+sqrt(b^2-a*c))/a);
+                std::pair<BlockVector<double>> Delta_u_pair = std::make_pair(Delta_uR + Delta_lambda_pair.first*Delta_uQ, 
+                                                                             Delta_uR + Delta_lambda_pair.second*Delta_uQ);
+                std::pair<BlockVector<double>> solution_i_pair = std::make_pair(solution_delta + Delta_u_pair.first, 
+                                                                                solution_delta + Delta_u_pair.second);
+                
+                std::pair<BlockVector<double>> solution_update_pair = std::make_pair(solution_i_pair.first.block(u_dof) - solution_n.block(u_dof), 
+                                                                                     sulotion_i_pair.second.block(u_dof) - solution_n.block(u_dof));
+                std::pair<double> cosines = std::make_pair(solution_n*solution_update.first/abs(solution_n*solution_update.first), 
+                                                           solution_n*solution_update.second/abs(solution_n*solution_update.second));
+                if (cosines.first > cosines.second){
+                    Delta_lambda = Delta_lambda_pair.first;
+                    Delta_u = Delta_u_pair.first;
                 } else {
-                    Delta_lambda = Delta_lambda[2];
-                    Delta_u = Delta_u[2];
+                    Delta_lambda = Delta_lambda_pair.second;
+                    Delta_u = Delta_u_pair.second;
                 }
             } else {
                 Delta_lambda = -b/a;
@@ -2435,7 +2442,7 @@ namespace Step44
 // we will need the face normals and so must specify this in the
 // update flags.
   template <int dim>
-  void Solid<dim>::assemble_system_rhs()
+  void Solid<dim>::assemble_system_rhs(bool Q_tag)
   {
     timer.enter_subsection("Assemble system right-hand side");
     std::cout << " ASM_R " << std::flush;
@@ -2458,7 +2465,8 @@ namespace Step44
                     &Solid::assemble_system_rhs_one_cell,
                     &Solid::copy_local_to_global_rhs,
                     scratch_data,
-                    per_task_data);
+                    per_task_data,
+                    Q_tag);
 
     timer.leave_subsection();
   }
@@ -2478,7 +2486,8 @@ namespace Step44
   void
   Solid<dim>::assemble_system_rhs_one_cell(const typename DoFHandler<dim>::active_cell_iterator & cell,
                                            ScratchData_RHS & scratch,
-                                           PerTaskData_RHS & data)
+                                           PerTaskData_RHS & data
+                                           bool Q_tag)
   {
     data.reset();
     scratch.reset();
@@ -2509,6 +2518,7 @@ namespace Step44
         }
       }
 
+    if (!Q_tag){
     for (unsigned int q_point = 0; q_point < n_q_points; ++q_point)
       {
         const SymmetricTensor<2, dim> tau = lqph[q_point].get_tau();
@@ -2541,6 +2551,7 @@ namespace Step44
               Assert(i_group <= J_dof, ExcInternalError());
           }
       }
+    }
 
                                      // Next we assemble the Neumann
                                      // contribution. We first check to see it
@@ -2615,6 +2626,8 @@ namespace Step44
             }
         }
   }
+  
+
 
 // @sect4{Solid:: s}
 // The constraints for this problem are simple to describe.
