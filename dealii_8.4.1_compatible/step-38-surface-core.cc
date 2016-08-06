@@ -201,12 +201,9 @@ namespace surface_growth
     void compute_error () const;
 
 
-    Triangulation<dim,spacedim>   triangulation_s;//for surface
-    Triangulation<spacedim>       triangulation_b;//for bulk
-    FE_Q<dim,spacedim>            fe_s;
-    FE_Q<spacedim>                fe_b;
-    DoFHandler<dim,spacedim>      dof_handler_s;
-    DofHandler<spacedim>          dof_handler_b;
+    Triangulation<spacedim>       triangulation;//for bulk
+    FE_Q<spacedim>                fe;
+    DofHandler<spacedim>          dof_handler;
     MappingQ<dim, spacedim>       mapping;
 
     SparsityPattern               sparsity_pattern;
@@ -445,34 +442,25 @@ namespace surface_growth
     static SphericalManifold<dim,spacedim> surface_description;
 
     {
-      Triangulation<spacedim> triangulation_b;
-      GridGenerator::half_hyper_ball(triangulation_b);
-
-      std::set<types::boundary_id> boundary_ids;
-      boundary_ids.insert (0);
-
-      GridGenerator::extract_boundary_mesh (triangulation_b, triangulation_s,
-                                            boundary_ids);
+      Triangulation<spacedim> triangulation;
+      GridGenerator::half_hyper_ball(triangulation);
     }
     triangulation_s.set_all_manifold_ids(0);
     triangulation_s.set_manifold (0, surface_description);
 
     triangulation_s.refine_global(4);
 
-    std::cout << "Surface mesh has " << triangulation_s.n_active_cells()
+    std::cout << "Mesh has " << triangulation.n_active_cells()
               << " cells."
               << std::endl;
 
-    dof_handler_s.distribute_dofs (fe_s);
-    dof_handler_b.distribute_dofs (fe_b);
+    dof_handler.distribute_dofs (fe);
 
-    std::cout << "Surface mesh has " << dof_handler_s.n_dofs()
-              << " degrees of freedom." << std::endl;
-    std::cout << "Bulk mesh has " << dof_handler_b.n_dofs()
+    std::cout << "Mesh has " << dof_handler.n_dofs()
               << " degrees of freedom." << std::endl;
 
-    DynamicSparsityPattern dsp (dof_handler_s.n_dofs(), dof_handler_s.n_dofs());
-    DoFTools::make_sparsity_pattern (dof_handler_s, dsp);
+    DynamicSparsityPattern dsp (dof_handler.n_dofs(), dof_handler.n_dofs());
+    DoFTools::make_sparsity_pattern (dof_handler, dsp);
     sparsity_pattern.copy_from (dsp);
 
     system_matrix.reinit (sparsity_pattern);
@@ -523,27 +511,34 @@ namespace surface_growth
       {
         cell_matrix = 0;
         cell_rhs = 0;
+        
         PointHistory<dim> *lqph = reinterpret_cast<PointHistory<dim>* >(cell->user_pointer());
+        //*********************************************************************************
+        //**************************bulk part**********************************************
+        //*********************************************************************************
         fe_values.reinit (cell);
 
         rhs.value_list (fe_values.get_quadrature_points(), rhs_values);
 
+        //*****************initialize shape_value and shape_grad*************************** 
         std::vector<std::vector<double> >                      Nx(n_q_points,
                                                                   std::vector<double>(fe_cell.dofs_per_cell));
-        std::vector<std::vector<Tensor<2, dim> > >             grad_Nx(n_q_points,
-                                                                  std::vector<Tensor<2, dim> >(fe_cell.dofs_per_cell));
-        std::vector<std::vector<SymmetricTensor<2, dim> > >    symm_grad_Nx(n_q_points,
-                                                                  std::vector<SymmetricTensor<2, dim> >(fe_cell.dofs_per_cell));
+        std::vector<std::vector<Tensor<2, spacedim> > >             grad_Nx(n_q_points,
+                                                                  std::vector<Tensor<2, spacedim> >(fe_cell.dofs_per_cell));
+        std::vector<std::vector<SymmetricTensor<2, spacedim> > >    symm_grad_Nx(n_q_points,
+                                                                  std::vector<SymmetricTensor<2, spacedim> >(fe_cell.dofs_per_cell));
 
         for (unsigned int q_point=0; q_point < n_q_points; ++ q_point){
-            const Tensor<2, dim> F_inv = lqph[q_point].get_F_inv();
+            const Tensor<2, spacedim> F_inv = lqph[q_point].get_F_inv();
             for (unsigned in k=0; k < dofs_per_cell; ++k){
                 grad_Nx[q_point][k] = fe_values.gradient(k, q_point) * F_inv;
-                symm_grad_Nx[q_point][k] = symmetrize(grad_nx[q_point][k]); 
+                symm_grad_Nx[q_point][k] = symmetrize(grad_Nx[q_point][k]); 
         }
+        
+        //******************assembly stiffness matrix**************************************
         for (unsigned int q_point=0; q_point < n_q_points; ++ q_point){
-            const Tensor<2, dim> tau         = lqph[q_point].get_tau();
-            const SymmetricTensor<4, dim> Jc = lqph[q_point].get_Jc();
+            const Tensor<2, spacedim> tau         = lqph[q_point].get_tau();
+            const SymmetricTensor<4, spacedim> Jc = lqph[q_point].get_Jc();
             const double d2Psi_vol_dJ2       = lqph[q_point].get_d2Psi_vol_dJ2();
             const double det_F               = lqph[q_point].get_det_F();
             for (unsigned int i=0; i<dofs_per_cell; ++i){
@@ -561,9 +556,9 @@ namespace surface_growth
             }
         }
 
-
+        //*******************assemble rhs**************************************************
         for (unsigned int q_point=0; q_point<n_q_points; ++q_point){
-            const SymmetricTensor<2, dim> tau = lqph[q_point].get_tau();
+            const SymmetricTensor<2, spacedim> tau = lqph[q_point].get_tau();
             const double det_F = lqph[q_point].get_det_F();
             const double dPsi_vol_dJ = lqph[q_point].get_dPsi_vol_dJ();
 
@@ -572,31 +567,52 @@ namespace surface_growth
             }
             //surface part is added later
         }
+        
+        //***************************************************************************
+        //**********************surface part*****************************************
+        //***************************************************************************
+        //Attention!!! Need to find relation between dof_on_face and dof_on_cell
+        //e.g. face_to_cell_dof(i)
+        std::vector<std::vector<double> >                      Nx_f(n_q_points,
+                                                                  std::vector<double>(fe_cell_face.dofs_per_cell_face));
+        std::vector<std::vector<Tensor<2, dim> > >             grad_Nx_f(n_q_points,
+                                                                  std::vector<Tensor<2, dim> >(fe_cell_face.dofs_per_cell_face));
+        std::vector<std::vector<SymmetricTensor<2, dim> > >    symm_grad_Nx_f(n_q_points,
+                                                                  std::vector<SymmetricTensor<2, dim> >(fe_cell_face.dofs_per_cell_face));
 
-        /*here we add surface part */
+        
         for (unsigned int face = 0; face < GeometryInfo<dim>::faces_per_cell; ++face){
             if (cell->face(face)->at_boundary() == true && cell->face(face)->boundary_id() == 0){
-                scratch.fe_face_values_ref.reinit(cell, face);
+                fe_face_values.reinit(cell, face);
+                //**************initialize shape_value and shape_grad*************************
+                for (unsigned int f_q_point=0; f_q_point < n_q_points_f; ++f_q_point){
+                    const Tensor<2, dim> F_inv_f = lqph[f_q_point].get_F_inv();
+                    for (unsigned in k=0; k < dofs_per_cell_face; ++k){
+                        grad_Nx_f[f_q_point][k] = fe_face_values.gradient(k, f_q_point) * F_inv;
+                        symm_grad_Nx_f[f_q_point][k] = symmetrize(grad_Nx_f[f_q_point][k]); 
+                }
+                
                 for (unsigned int f_q_point = 0; f_q_point < n_q_points_f; ++f_q_point){
-                    const Tensor<1, spacedim> &N = scratch.fe_face_values_ref.normal_vector(f_q_point);
-                    const Tensor<1, spacedim> traction = pressure * N;
+                    const Tensor<1, dim> &N = scratch.fe_face_values_ref.normal_vector(f_q_point);
+                    const Tensor<1, dim> traction = pressure * N;
                     const Tensor<1, dim> tau_surface = tau - tau * N;
-                    const double JxW = fe_face_values_ref.JxW(f_q_point);
-                    for (unsigned int i = 0; i < dofs_per_cell; ++i){
+                    const double JxW = fe_face_values.JxW(f_q_point);
+                    //We need to convert i-th and j-th(dofs_per_cell_face) to dofs_per_cell 
+                    for (unsigned int i = 0; i < dofs_per_cell_face; ++i){
                         const unsigned int component_i = fe.system_to_component_index(i).first;
-                        for (unsigned int j = 0; j < dofs_per_cell; ++j){
+                        for (unsigned int j = 0; j < dofs_per_cell_face; ++j){
                             const unsigned int component_j = fe.system_to_comonent_index(j).first;
-                            cell_matrix(i,j) += grad_Nx_surface[i] * Jc
-                                                * grad_Nx_surface[j] * JxW;
+                            cell_matrix(face_to_cell_dof(i),face_to_cell_dof(j)) += grad_Nx_f[f_q_point][i] * Jc
+                                                * grad_Nx_f[f_q_point][j] * JxW;
                             if (component_i == component_j)
-                                cell_matrix(i,j) += grad_Nx_surface[i][component_i] * tau_surface *
-                                                    grad_Nx_surface[j][component_j] * fe_values.JxW(q_point);
+                                cell_matrix(face_to_cell_dof(i),face_to_cell_dof(j)) += grad_Nx_f[f_q_point][i][component_i] * tau_surface *
+                                                    grad_Nx_f[f_q_point][j][component_j] * fe_face_values.JxW(f_q_point);
                         }
                     } 
- 
+                    
                     for (unsigned int i = 0; i < dofs_per_cell; ++i){
                         const unsigned int component_i = fe.system_to_component_index(i).first;
-                        cell_rhs(i) += grad_Nx_surface[i] * tau_surface * JxW;
+                        cell_rhs(face_to_cell_dof(i)) += grad_Nx_f[i] * tau_surface * fe_face_values.JxW(f_q_point);
                     } 
                 }
             }
@@ -777,3 +793,4 @@ int main ()
 
   return 0;
 }
+
