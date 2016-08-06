@@ -53,7 +53,8 @@ namespace surface_growth
 {
   using namespace dealii;
 
-  class Material_Neo_Hook<dim>
+  template <int dim>
+  class Material_Neo_Hook
   {
   public:
       Material_Neo_Hook(const double mu, donst double nu)
@@ -101,9 +102,54 @@ namespace surface_growth
       SymmetricTensor<2, dim> b_bar;
   };
 
+  template <int dim>
   class Surface_Material
   {
-  }
+  public:
+      Surface_Material(const double mu, donst double nu)
+      {
+      }
+
+      ~Surface_Material()
+      {}
+
+      void update_material_data(const Tensor<2, dim> &F) {
+      }
+
+      SymmetricTensor<2, dim> get_tau(){
+          return get_tau_iso() + get_tau_vol();
+      }
+
+      SymmetricTensor<2, dim> get_Jc(){
+          return get_Jc_vol() + get_Jc_iso();
+      }
+
+      double get_dPsi_vol_dJ() const{
+      }
+
+      double get_d2Psi_vol_dJ2() const{
+      }
+
+  private:
+      SymmetricTensor<2, dim> get_tau_iso(){
+      }
+
+      SymmetricTensor<2, dim> get_tau_vol(){
+      }
+
+      SymmetricTensor<2, dim> get_Jc_iso(){
+          const SymmetricTensor<2, dim> tau_bar = get_tau_bar();
+
+      }
+
+      SymmetricTensor<2, dim> get_Jc_vol(){
+      } 
+
+  protected:
+      const double c_1;
+      double det_F;
+      SymmetricTensor<2, dim> b_bar;
+  };
 
   template <int dim>
   class PointHistory
@@ -124,7 +170,8 @@ namespace surface_growth
       }
 
       void setup_lqp (){
-          material = new Material_Neo_Hook<dim>(mu, nu);
+          if (dim == 3)material = new Material_Neo_Hook<dim>(mu, nu);
+          if (dim == 2)material = new Surface_material<dim>(mu, nu);
           update_values(Tensor<2, dim>() );
       }
 
@@ -202,6 +249,8 @@ namespace surface_growth
 
 
     Triangulation<spacedim>       triangulation;//for bulk
+    std::vector<PointHistory<spacedim> > qph;
+    std::vector<PointHistory<dim> > qph_s;
     FE_Q<spacedim>                fe;
     DofHandler<spacedim>          dof_handler;
     MappingQ<dim, spacedim>       mapping;
@@ -216,7 +265,7 @@ namespace surface_growth
 
   // @sect3{Equation data}
 
-  // Next, let us define the classes that describe the exact solution and the
+  // Next, let us define the classes that describe the
   // right hand sides of the problem. This is in analogy to step-4 and step-7
   // where we also defined such objects. Given the discussion in the
   // introduction, the actual formulas should be self-explanatory. A point of
@@ -226,69 +275,6 @@ namespace surface_growth
   // the general template and have a <code>switch</code> statement (or a
   // sequence of <code>if</code>s) for each possible value of the spatial
   // dimension.
-  template <int dim>
-  class Solution  : public Function<dim>
-  {
-  public:
-    Solution () : Function<dim>() {}
-
-    virtual double value (const Point<dim>   &p,
-                          const unsigned int  component = 0) const;
-
-    virtual Tensor<1,dim> gradient (const Point<dim>   &p,
-                                    const unsigned int  component = 0) const;
-
-  };
-
-
-  template <>
-  double
-  Solution<2>::value (const Point<2> &p,
-                      const unsigned int) const
-  {
-    return ( -2. * p(0) * p(1) );
-  }
-
-
-  template <>
-  Tensor<1,2>
-  Solution<2>::gradient (const Point<2>   &p,
-                         const unsigned int) const
-  {
-    Tensor<1,2> return_value;
-    return_value[0] = -2. * p(1) * (1 - 2. * p(0) * p(0));
-    return_value[1] = -2. * p(0) * (1 - 2. * p(1) * p(1));
-
-    return return_value;
-  }
-
-
-  template <>
-  double
-  Solution<3>::value (const Point<3> &p,
-                      const unsigned int) const
-  {
-    return (std::sin(numbers::PI * p(0)) *
-            std::cos(numbers::PI * p(1))*exp(p(2)));
-  }
-
-
-  template <>
-  Tensor<1,3>
-  Solution<3>::gradient (const Point<3>   &p,
-                         const unsigned int) const
-  {
-    using numbers::PI;
-
-    Tensor<1,3> return_value;
-
-    return_value[0] = PI *cos(PI * p(0))*cos(PI * p(1))*exp(p(2));
-    return_value[1] = -PI *sin(PI * p(0))*sin(PI * p(1))*exp(p(2));
-    return_value[2] = sin(PI * p(0))*cos(PI * p(1))*exp(p(2));
-
-    return return_value;
-  }
-
 
 
   template <int dim>
@@ -369,20 +355,43 @@ namespace surface_growth
     {
       triangulation.clear_user_data();
       {
-          std::vector<PointHistory<dim> > tmp;
-          tmp.swap(quadrature_point_history);
+          std::vector<PointHistory<spacedim> > tmp;
+          tmp.swap(qph);
+          std::vector<PointHistory<dim> > tmp2;
+          tmp2.swap(qph_s);
       }
-      quadrature_point_history.resize(triangulation.n_active_cells() * n_q_points);
-
+      qph.resize(triangulation.n_active_cells() * n_q_points);
+      unsigned int num_faces_on_boundary0 = 0;
       unsigned int history_index = 0;
       for (typename Triangulation<dim>::active_cell_iterator cell = triangulation.begin_active();
               cell != triangulation.end(); ++ cell){
-          cell->set_user_pointer(&quadrature_point_history[history_index]);
+          cell->set_user_pointer(&qph[history_index]);
           history_index += n_q_points;
+          //count num of faces on boundary 0
+          for(unsigned int face = 0; face < GeometryInfo<dim>::faces_per_cell; ++face){
+              if (cell->face(face)->at_boundary() == true && cell->face(face)->boundary_id() == 0){
+                  num_faces_on_boundary0 ++;
+              }
+          }
       }
+      
+      qph_s.resize(num_faces_on_boundary0 * n_f_q_points);
+      unsigned int history_index_s = 0;
+      for (typename Triangulation<dim>::active_cell_iterator cell = triangulation.begin_active();
+              cell != triangulation.end(); ++ cell){
+          for(unsigned int face = 0; face < GeometryInfo<dim>::faces_per_cell; ++face){
+              if (cell->face(face)->at_boundary() == true && cell->face(face)->boundary_id() == 0){
+                  //check usage for set_user_pointer(...)
+                  //add if necessary
+                  cell->face(face)->set_user_pointer(&qph_s[history_index_s]);
+                  history_index_s += n_q_points_f;
+              }
+          }
+      }    
 
-      Assert(history_index == quadrature_point_history.size(),
+      Assert(history_index == qph.size(),
              ExcInternalError());
+      
     }
     
     for (typename Triangulation<dim>::active_cell_iterator cell = triangulation.begin_active();
@@ -512,7 +521,7 @@ namespace surface_growth
         cell_matrix = 0;
         cell_rhs = 0;
         
-        PointHistory<dim> *lqph = reinterpret_cast<PointHistory<dim>* >(cell->user_pointer());
+        PointHistory<spacedim> *lqph = reinterpret_cast<PointHistory<dim>* >(cell->user_pointer());
         //*********************************************************************************
         //**************************bulk part**********************************************
         //*********************************************************************************
@@ -546,7 +555,7 @@ namespace surface_growth
                 for (unsigned int j=0; j<dofs_per_cell; ++j){
                     const unsigned int component_j = fe.system_to_component_index(j).first;
                     cell_matrix(i,j) += symm_grad_Nx[q_point][i] * Jc
-                                        * symm_grad_Nx[q_point][j] * JxW;
+                                        * symm_grad_Nx[q_point][j] * fe_values.JxW(q_point);
                     if (component_i == component_j)
                         cell_matrix(i,j) += grad_Nx[q_point][i][component_i] * tau *
                                       grad_Nx[q_point][j][component_j] *
@@ -583,6 +592,8 @@ namespace surface_growth
         
         for (unsigned int face = 0; face < GeometryInfo<dim>::faces_per_cell; ++face){
             if (cell->face(face)->at_boundary() == true && cell->face(face)->boundary_id() == 0){
+                //check usage for use_pointer()
+                PointHistory<dim> *lqph_s = reinterpret_cast<PointHistory<dim>* >(cell->face(face)->user_pointer());
                 fe_face_values.reinit(cell, face);
                 //**************initialize shape_value and shape_grad*************************
                 for (unsigned int f_q_point=0; f_q_point < n_q_points_f; ++f_q_point){
@@ -593,19 +604,24 @@ namespace surface_growth
                 }
                 
                 for (unsigned int f_q_point = 0; f_q_point < n_q_points_f; ++f_q_point){
-                    const Tensor<1, dim> &N = scratch.fe_face_values_ref.normal_vector(f_q_point);
-                    const Tensor<1, dim> traction = pressure * N;
-                    const Tensor<1, dim> tau_surface = tau - tau * N;
-                    const double JxW = fe_face_values.JxW(f_q_point);
+                    //uncomment to calculate external pressure applied to this boundary
+                    //const Tensor<1, dim> &N = fe_face_values.normal_vector(f_q_point);
+                    //const Tensor<1, dim> traction = pressure * N;
+                    //const Tensor<1, dim> tau_surface = tau - tau * N;
+                    //calculate internal stress of curved surface
+                    const Tensor<2, dim> tau_s         = lqph_s[f_q_point].get_tau();
+                    const SymmetricTensor<4, dim> Jc = lqph_s[f_q_point].get_Jc();
+                    const double d2Psi_vol_dJ2       = lqph_s[f_q_point].get_d2Psi_vol_dJ2();
+                    const double det_F               = lqph_s[f_q_point].get_det_F();
                     //We need to convert i-th and j-th(dofs_per_cell_face) to dofs_per_cell 
                     for (unsigned int i = 0; i < dofs_per_cell_face; ++i){
                         const unsigned int component_i = fe.system_to_component_index(i).first;
                         for (unsigned int j = 0; j < dofs_per_cell_face; ++j){
                             const unsigned int component_j = fe.system_to_comonent_index(j).first;
                             cell_matrix(face_to_cell_dof(i),face_to_cell_dof(j)) += grad_Nx_f[f_q_point][i] * Jc
-                                                * grad_Nx_f[f_q_point][j] * JxW;
+                                                * grad_Nx_f[f_q_point][j] * fe_face_values.JxW(f_q_point);
                             if (component_i == component_j)
-                                cell_matrix(face_to_cell_dof(i),face_to_cell_dof(j)) += grad_Nx_f[f_q_point][i][component_i] * tau_surface *
+                                cell_matrix(face_to_cell_dof(i),face_to_cell_dof(j)) += grad_Nx_f[f_q_point][i][component_i] * tau_s *
                                                     grad_Nx_f[f_q_point][j][component_j] * fe_face_values.JxW(f_q_point);
                         }
                     } 
@@ -793,4 +809,3 @@ int main ()
 
   return 0;
 }
-
