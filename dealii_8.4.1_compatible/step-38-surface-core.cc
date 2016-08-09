@@ -54,7 +54,7 @@ namespace surface_growth
   using namespace dealii;
 
   template <int dim>
-  class Material_Neo_Hook
+  class Material_Neo_Hook : public Material
   {
   public:
       Material_Neo_Hook(const double mu, donst double nu)
@@ -103,7 +103,7 @@ namespace surface_growth
   };
 
   template <int dim>
-  class Surface_Material
+  class Surface_Material : public Material
   {
   public:
       Surface_Material(const double mu, donst double nu)
@@ -186,7 +186,7 @@ namespace surface_growth
       }
 
   private:
-      Material_New_Hook<dim> *material;
+      Material<dim> *material;
       Tensor<2, dim> F_inv;
       SymmetricTensor<2, dim> tau;
       double d2Psi_vol_dJ2;
@@ -241,6 +241,8 @@ namespace surface_growth
   private:
     static const unsigned int dim = spacedim-1;
 
+    void setup_qph ();
+    void update_qph_incremental(const Vector<double> &solution_delta);
     void make_grid_and_dofs ();
     void assemble_system ();
     void solve ();
@@ -348,7 +350,7 @@ namespace surface_growth
   {}
 
   template <int spacedim>
-  SurfaceCoreProblem<spacedim>::setup_qph()
+  void SurfaceCoreProblem<spacedim>::setup_qph()
   {
     std::cout << "    Setting up quadrature point data..." << std::endl;
 
@@ -379,7 +381,7 @@ namespace surface_growth
       unsigned int history_index_s = 0;
       for (typename Triangulation<dim>::active_cell_iterator cell = triangulation.begin_active();
               cell != triangulation.end(); ++ cell){
-          for(unsigned int face = 0; face < GeometryInfo<dim>::faces_per_cell; ++face){
+          for(unsigned int face = 0; face < GeometryInfo<spacedim>::faces_per_cell; ++face){
               if (cell->face(face)->at_boundary() == true && cell->face(face)->boundary_id() == 0){
                   //check usage for set_user_pointer(...)
                   //add if necessary
@@ -396,10 +398,45 @@ namespace surface_growth
     
     for (typename Triangulation<dim>::active_cell_iterator cell = triangulation.begin_active();
                          cell != triangulation.end(); ++cell){
-        PointHistory<dim> *lqph = reinterpret_cast<PointHistory<dim>*>(cell->user_pointer());
+        PointHistory<spacedim> *lqph = reinterpret_cast<PointHistory<spacedim>*>(cell->user_pointer());
         for (unsigned int q_point = 0; q_point < n_q_points; ++q_point)
             lqph[q_point].setup_lqp(parameters);
+            
+        for(unsigned int face = 0; face < GeometryInfo<spacedim>::faces_per_cell; ++face){
+            if (cell->face(face)->at_boundary() == true && cell->face(face)->boundary_id() == 0){
+                PointHistory<dim> *lqph_s = reinterpret_cast<PointHistory<dim>*>(cell->face(face)->user_pointer());
+                for (unsigned int f_q_point = 0; f_q_point < n_f_q_points; ++f_q_point)
+                    lqph_s[f_q_point].setup_lqp(parameters);
+            }
+        }
     }
+  }
+  
+  template <int spacedim>
+  void SurfaceCoreProblem<spacedim>::update_qph_incremental(const Vector<double> &solution_delta)
+  {
+      const Vector<double> solution_total(get_total_solution(solution_delta));
+      for (typename Triangulation<dim>::active_cell_iterator cell = triangulation.begin_active();
+                         cell != triangulation.end(); ++cell){
+          PointHistory<spacedim> *lqph = reinterpret_cast<PointHistory<spacedim>*>(cell->user_pointer());
+          fe_values.reinit(cell);
+          Vector<Tensor<2, spacedim> > solution_grads_u_total(n_q_points);
+          fe_values.get_function_gradients(solution_total, solution_grads_u_total);
+          for (unsigned in q_point = 0; q_point < n_q_points; ++q_point)
+              lqph[q_point].update_values(solution_grads_u_total[q_point]);
+          
+          for(unsigned int face = 0; face < GeometryInfo<spacedim>::faces_per_cell; ++face){
+              if (cell->face(face)->at_boundary() == true && cell->face(face)->boundary_id() == 0){
+                  PointHistory<dim> *lqph_s = reinterpret_cast<PointHistory<dim>*>(cell->face(face)->user_pointer());
+                  //eqn (2) F_hat = F * I_hat
+                  Matrix<dim, spacedim> I_hat = ...;//
+                  Vector<Tensor<2, dim> > solution_surface_grads_u_total(n_f_q_points);
+                  for (unsigned int f_q_point = 0; f_q_point < n_f_q_points; ++f_q_point){
+                      solution_surface_grads_u_total[f_q_point] = solution_grads_u_total[face_to_cell_q_point(f_q_point)] * I_hat;
+                      lqph_s[f_q_point].update_values(solution_surface_grads_u_total[f_q_poin]);
+              }
+          }
+      }
   }
 
   // @sect4{SurfaceCoreProblem::make_grid_and_dofs}
@@ -460,8 +497,7 @@ namespace surface_growth
     triangulation_s.refine_global(4);
 
     std::cout << "Mesh has " << triangulation.n_active_cells()
-              << " cells."
-              << std::endl;
+              << " cells." << std::endl;
 
     dof_handler.distribute_dofs (fe);
 
@@ -496,11 +532,17 @@ namespace surface_growth
     system_rhs = 0;
 
     const QGauss<dim>  quadrature_formula(2*fe.degree);
-    FEValues<dim,spacedim> fe_values (mapping, fe, quadrature_formula,
+    FEValues<dim> fe_values (mapping, fe, quadrature_formula,
                                       update_values              |
                                       update_gradients           |
                                       update_quadrature_points   |
                                       update_JxW_values);
+                                      
+    FEFaceValues<dim,spacedim> fe_face_values (mapping_s, fe, quadrature_formula,
+                                 update_values              |
+                                 update_gradients           |
+                                 update_quadrature_points   |
+                                 update_JxW_value);
 
     const unsigned int        dofs_per_cell = fe.dofs_per_cell;
     const unsigned int        n_q_points    = quadrature_formula.size();
@@ -521,7 +563,7 @@ namespace surface_growth
         cell_matrix = 0;
         cell_rhs = 0;
         
-        PointHistory<spacedim> *lqph = reinterpret_cast<PointHistory<dim>* >(cell->user_pointer());
+        PointHistory<spacedim> *lqph = reinterpret_cast<PointHistory<spacedim>* >(cell->user_pointer());
         //*********************************************************************************
         //**************************bulk part**********************************************
         //*********************************************************************************
@@ -780,8 +822,8 @@ int main ()
       using namespace dealii;
       using namespace Step38;
 
-      SurfaceCoreProblem<3> laplace_beltrami;
-      laplace_beltrami.run();
+      SurfaceCoreProblem<3> surface_core;
+      surface_core.run();
     }
   catch (std::exception &exc)
     {
