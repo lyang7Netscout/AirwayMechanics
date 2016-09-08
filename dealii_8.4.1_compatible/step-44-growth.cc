@@ -1,22 +1,29 @@
 /* ---------------------------------------------------------------------
  *
- * Copyright (C) 2010 - 2015 by the deal.II authors and
- *                              & Jean-Paul Pelteret and Andrew McBride
+ * This program is to add growth( stress-driven or growth factor driven)
+ * to the nonlinear bulk mechanics.
  *
- * This file is part of the deal.II library.
+ * Growth is more subtle then first thought.
+ *                     F = F_g * F_e
+ * If F_g is applied to current configuration, it is incompatible configuration
+ * and we lose track of the reference configuration(there is no mapping for stress
+ * between reference configuration and current configuration)p.93-94[1]
+ * Therefore it is important to choose which form of stress(Kirchhoff, firstPiola, or secondPiola??)
+ * to use.
+ * 
+ * 1)For stress-driven growth, if stress is kept constant, the material will keep growing and 
+ * never stop, since F_g makes F_e (thus internal stress) smaller, internal stress cannot balance
+ * external stress, and the stress difference will drive further growth.
+ * 
+ * 2)For stress-driven growth, if stretch is constant, the material will stop growing at some point.
  *
- * The deal.II library is free software; you can use it, redistribute
- * it, and/or modify it under the terms of the GNU Lesser General
- * Public License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- * The full text of the license can be found in the file LICENSE at
- * the top level of the deal.II distribution.
- *
+ * 3)For GF-driven growth, F_e is compressive, which will drive the algorithm to expand volume
+ *(maintain volume for F_e part).
  * ---------------------------------------------------------------------
-
+ * References:  1) Numarical modelling of the growth and remodelling phenomenoa
+                   in biological tissues. Ester Comellas Sanfelia
  *
- * Authors: Jean-Paul Pelteret, University of Cape Town,
- *          Andrew McBride, University of Erlangen-Nuremberg, 2010
+ * Le Yang 2016.
  */
 
 
@@ -346,7 +353,7 @@ namespace Step44
                           Patterns::Double(),
                           "End time");
 
-        prm.declare_entry("Time step size", "0.1",
+        prm.declare_entry("Time step size", "0.2",
                           Patterns::Double(),
                           "Time step size");
       }
@@ -539,7 +546,7 @@ namespace Step44
       :
       kappa((2.0 * mu * (1.0 + nu)) / (3.0 * (1.0 - 2.0 * nu))),
       c_1(mu / 2.0),
-      det_F(1.0),
+      det_Fe(1.0),
       p_tilde(0.0),
       J_tilde(1.0),
       b_bar(StandardTensors<dim>::I)
@@ -554,12 +561,14 @@ namespace Step44
     // based on $F$ and the pressure $\widetilde{p}$ and dilatation
     // $\widetilde{J}$, and at the end of the function include a physical
     // check for internal consistency:
-    void update_material_data(const Tensor<2, dim> &F,
+    void update_material_data(const Tensor<2, dim> &F_e,//most probably we don't need to deal with F_g inside Material class
+                                                        //since this class is only responsible for calculating stress and elasticity tensor
+                                                        //based on deformation, while F_g doesn't participate in these 
                               const double p_tilde_in,
                               const double J_tilde_in)
     {
-      det_F = determinant(F);
-      b_bar = std::pow(det_F, -2.0 / dim) * symmetrize(F * transpose(F));
+      det_Fe = determinant(F_e);
+      b_bar = std::pow(det_F, -2.0 / 3.0) * symmetrize(F_e * transpose(F_e));
       p_tilde = p_tilde_in;
       J_tilde = J_tilde_in;
 
@@ -567,7 +576,7 @@ namespace Step44
     }
 
     // The second function determines the Kirchhoff stress $\boldsymbol{\tau}
-    // = \boldsymbol{\tau}_{\textrm{iso}} + \boldsymbol{\tau}_{\textrm{vol}}$
+    // = \boldsymbol{\tau}_{\/btextrm{iso}} + \boldsymbol{\tau}_{\textrm{vol}}$
     SymmetricTensor<2, dim> get_tau()
     {
       return get_tau_iso() + get_tau_vol();
@@ -635,7 +644,7 @@ namespace Step44
     // volumetric Kirchhoff stress $\boldsymbol{\tau}_{\textrm{vol}}$:
     SymmetricTensor<2, dim> get_tau_vol() const
     {
-      return p_tilde * det_F * StandardTensors<dim>::I;
+      return p_tilde * det_Fe * StandardTensors<dim>::I;
     }
 
     // Next, determine the isochoric Kirchhoff stress
@@ -658,7 +667,7 @@ namespace Step44
     SymmetricTensor<4, dim> get_Jc_vol() const
     {
 
-      return p_tilde * det_F
+      return p_tilde * det_Fe
              * ( StandardTensors<dim>::IxI
                  - (2.0 * StandardTensors<dim>::II) );
     }
@@ -677,9 +686,9 @@ namespace Step44
                         tau_iso);
       const SymmetricTensor<4, dim> c_bar = get_c_bar();
 
-      return (2.0 / dim) * trace(tau_bar)
+      return (2.0 / 3.0) * trace(tau_bar)
              * StandardTensors<dim>::dev_P
-             - (2.0 / dim) * (tau_iso_x_I + I_x_tau_iso)
+             - (2.0 / 3.0) * (tau_iso_x_I + I_x_tau_iso)
              + StandardTensors<dim>::dev_P * c_bar
              * StandardTensors<dim>::dev_P;
     }
@@ -706,7 +715,11 @@ namespace Step44
   public:
     PointHistory()
       :
+      material(NULL),
       F_inv(StandardTensors<dim>::I),
+      F(StandardTensors<dim>::I),
+      F_g(StandardTensors<dim>::I),
+      F_e(StandardTensors<dim>::I),
       tau(SymmetricTensor<2, dim>()),
       d2Psi_vol_dJ2(0.0),
       dPsi_vol_dJ(0.0),
@@ -714,7 +727,10 @@ namespace Step44
     {}
 
     virtual ~PointHistory()
-    {}
+    {
+      delete material;
+      material = NULL;
+    }
 
     // The first function is used to create a material object and to
     // initialize all tensors correctly: The second one updates the stored
@@ -723,8 +739,8 @@ namespace Step44
     // dilation $\widetilde{J}$ field values.
     void setup_lqp (const Parameters::AllParameters &parameters)
     {
-      material.reset(new Material_Compressible_Neo_Hook_Three_Field<dim>(parameters.mu,
-                     parameters.nu));
+      material = new Material_Compressible_Neo_Hook_Three_Field<dim>(parameters.mu,
+          parameters.nu);
       update_values(Tensor<2, dim>(), 0.0, 1.0);
     }
 
@@ -746,18 +762,35 @@ namespace Step44
                         const double p_tilde,
                         const double J_tilde)
     {
-      const Tensor<2, dim> F
-        = (Tensor<2, dim>(StandardTensors<dim>::I) +
-           Grad_u_n);
-      material->update_material_data(F, p_tilde, J_tilde);
-
+      F = Tensor<2,dim>(StandardTensor<dim>::I) + Grad_u_n;
+      F_e = F*invert(F_g);//before growth, during all steps of solve_nonlinear_timestep(), F_e = F
+                          //after grwoth, F_g is stored, during the second solve_nonlinear_timestep(), F_e = F/F_g
+      material->update_material_data(F_e, p_tilde, J_tilde);
+      
+      F_inv = invert(F);
       // The material has been updated so we now calculate the Kirchhoff
       // stress $\mathbf{\tau}$, the tangent $J\mathfrak{c}$ and the first and
       // second derivatives of the volumetric free energy.
       //
       // We also store the inverse of the deformation gradient since we
       // frequently use it:
-      F_inv = invert(F);
+      tau = material->get_tau();
+      Jc = material->get_Jc();
+      dPsi_vol_dJ = material->get_dPsi_vol_dJ();
+      d2Psi_vol_dJ2 = material->get_d2Psi_vol_dJ2();
+      
+    }
+
+    void update_values_after_growth (const Tensor<2, dim> &F_g_,
+                        const double p_tilde,
+                        const double J_tilde)
+    {
+
+      F_g = F_g_;
+      F_e = F*invert(F_g);//F is already stored in qph
+      material->update_material_data(F_e, p_tilde, J_tilde);
+
+
       tau = material->get_tau();
       Jc = material->get_Jc();
       dPsi_vol_dJ = material->get_dPsi_vol_dJ();
@@ -815,8 +848,10 @@ namespace Step44
     // materials are used in different regions of the domain, as well as the
     // inverse of the deformation gradient...
   private:
-    std_cxx11::shared_ptr< Material_Compressible_Neo_Hook_Three_Field<dim> > material;
-
+    Material_Compressible_Neo_Hook_Three_Field<dim> *material;
+    Tensor<2, dim> F;
+    Tensor<2, dim> F_g;
+    Tensor<2, dim> F_e;
     Tensor<2, dim> F_inv;
 
     // ... and stress-type variables along with the tangent $J\mathfrak{c}$:
@@ -938,6 +973,9 @@ namespace Step44
     void
     copy_local_to_global_UQPH(const PerTaskData_UQPH &/*data*/)
     {}
+    
+    void 
+    update_qph_for_growth();
 
     // Solve for the displacement using a Newton-Raphson method. We break this
     // function into the nonlinear loop and the function that solves the
@@ -1116,7 +1154,6 @@ namespace Step44
     n_q_points (qf_cell.size()),
     n_q_points_f (qf_face.size())
   {
-    Assert(dim==2 || dim==3, ExcMessage("This problem only works in 2 or 3 space dimensions."));
     determine_component_extractors();
   }
 
@@ -1190,10 +1227,17 @@ namespace Step44
         // \varDelta \mathbf{\Xi}$...
         solve_nonlinear_timestep(solution_delta);
         solution_n += solution_delta;
-
-        // ...and plot the results before moving on happily to the next time
-        // step:
         output_results();
+        
+        grow();//this will update quadrature point history and associated material object
+               //therefore the system is off-balance again
+        
+        solution_delta = 0.0;
+        solve_nonlinear_timestep(solution_delta);
+        solution_n += solution_delta;
+        output_results();
+
+
         time.increment();
       }
   }
@@ -1514,8 +1558,8 @@ namespace Step44
   void Solid<dim>::make_grid()
   {
     GridGenerator::hyper_rectangle(triangulation,
-                                   (dim==3 ? Point<dim>(0.0, 0.0, 0.0) : Point<dim>(0.0, 0.0)),
-                                   (dim==3 ? Point<dim>(1.0, 1.0, 1.0) : Point<dim>(1.0, 1.0)),
+                                   Point<dim>(0.0, 0.0, 0.0),
+                                   Point<dim>(1.0, 1.0, 1.0),
                                    true);
     GridTools::scale(parameters.scale, triangulation);
     triangulation.refine_global(std::max (1U, parameters.global_refinement));
@@ -1534,25 +1578,13 @@ namespace Step44
     for (; cell != endc; ++cell)
       for (unsigned int face = 0;
            face < GeometryInfo<dim>::faces_per_cell; ++face)
-        {
-          if (cell->face(face)->at_boundary() == true
+        if (cell->face(face)->at_boundary() == true
+            &&
+            cell->face(face)->center()[2] == 1.0 * parameters.scale)
+          if (cell->face(face)->center()[0] < 0.5 * parameters.scale
               &&
-              cell->face(face)->center()[1] == 1.0 * parameters.scale)
-            {
-              if (dim==3)
-                {
-                  if (cell->face(face)->center()[0] < 0.5 * parameters.scale
-                      &&
-                      cell->face(face)->center()[2] < 0.5 * parameters.scale)
-                    cell->face(face)->set_boundary_id(6);
-                }
-              else
-                {
-                  if (cell->face(face)->center()[0] < 0.5 * parameters.scale)
-                    cell->face(face)->set_boundary_id(6);
-                }
-            }
-        }
+              cell->face(face)->center()[1] < 0.5 * parameters.scale)
+            cell->face(face)->set_boundary_id(6);
   }
 
 
@@ -1819,6 +1851,51 @@ namespace Step44
                                   scratch.solution_values_p_total[q_point],
                                   scratch.solution_values_J_total[q_point]);
   }
+  
+// Now we describe how we grow an FE based on stress environment.
+// current deformation and stress is already stored in quadrature point history.
+// F_g is calculated, F_e is deduced, and stress and elasticity tensor are updated.
+  template <int dim>
+  void
+  Solid<dim>::update_qph_for_growth_one_cell(const typename DoFHandler<dim>::active_cell_iterator &cell,
+                                              ScratchData_UQPH &scratch,
+                                              PerTaskData_UQPH &/*data*/)
+  {
+    PointHistory<dim> *lqph =
+      reinterpret_cast<PointHistory<dim>*>(cell->user_pointer());
+
+    Assert(lqph >= &quadrature_point_history.front(), ExcInternalError());
+    Assert(lqph <= &quadrature_point_history.back(), ExcInternalError());
+
+    Assert(scratch.solution_grads_u_total.size() == n_q_points,
+           ExcInternalError());
+    Assert(scratch.solution_values_p_total.size() == n_q_points,
+           ExcInternalError());
+    Assert(scratch.solution_values_J_total.size() == n_q_points,
+           ExcInternalError());
+
+    scratch.reset();
+
+    // We first need to find the values and gradients at quadrature points
+    // inside the current cell and then we update each local QP using the
+    // displacement gradient and total pressure and dilatation solution
+    // values:
+    scratch.fe_values_ref.reinit(cell);
+    scratch.fe_values_ref[u_fe].get_function_gradients(scratch.solution_total,
+                                                       scratch.solution_grads_u_total);
+    scratch.fe_values_ref[p_fe].get_function_values(scratch.solution_total,
+                                                    scratch.solution_values_p_total);
+    scratch.fe_values_ref[J_fe].get_function_values(scratch.solution_total,
+                                                    scratch.solution_values_J_total);
+
+    for (unsigned int q_point = 0; q_point < n_q_points; ++q_point){
+      tau = lqph[q_point].get_tau();
+      F_g = calculate_Fg(tau);
+      lqph[q_point].update_values_for_growth(F_g,
+                                  scratch.solution_values_p_total[q_point],
+                                  scratch.solution_values_J_total[q_point]);
+    }
+  }
 
 
 // @sect4{Solid::solve_nonlinear_timestep}
@@ -1916,6 +1993,9 @@ namespace Step44
                   << "  " << error_update_norm.norm << "  " << error_update_norm.u
                   << "  " << error_update_norm.p << "  " << error_update_norm.J
                   << "  " << std::endl;
+                  
+
+        
       }
 
     // At the end, if it turns out that we have in fact done more iterations
@@ -2164,7 +2244,7 @@ namespace Step44
             if (k_group == u_dof)
               {
                 scratch.grad_Nx[q_point][k] = scratch.fe_values_ref[u_fe].gradient(k, q_point)
-                                              * F_inv;
+                                              * F_inv;// this is the place where F_g should come into play
                 scratch.symm_grad_Nx[q_point][k] = symmetrize(scratch.grad_Nx[q_point][k]);
               }
             else if (k_group == p_dof)
@@ -2456,12 +2536,12 @@ namespace Step44
     const bool apply_dirichlet_bc = (it_nr == 0);
 
     // The boundary conditions for the indentation problem are as follows: On
-    // the -x, -y and -z faces (IDs 0,2,4) we set up a symmetry condition to
-    // allow only planar movement while the +x and +z faces (IDs 1,5) are
-    // traction free. In this contrived problem, part of the +y face (ID 3) is
-    // set to have no motion in the x- and z-component. Finally, as described
-    // earlier, the other part of the +y face has an the applied pressure but
-    // is also constrained in the x- and z-directions.
+    // the -x, -y and -z faces (ID's 0,2,4) we set up a symmetry condition to
+    // allow only planar movement while the +x and +y faces (ID's 1,3) are
+    // traction free. In this contrived problem, part of the +z face (ID 5) is
+    // set to have no motion in the x- and y-component. Finally, as described
+    // earlier, the other part of the +z face has an the applied pressure but
+    // is also constrained in the x- and y-directions.
     //
     // In the following, we will have to tell the function interpolation
     // boundary values which components of the solution vector should be
@@ -2473,6 +2553,7 @@ namespace Step44
     // use it when generating the relevant component masks:
     const FEValuesExtractors::Scalar x_displacement(0);
     const FEValuesExtractors::Scalar y_displacement(1);
+    const FEValuesExtractors::Scalar z_displacement(2);
 
     {
       const int boundary_id = 0;
@@ -2506,104 +2587,62 @@ namespace Step44
                                                  constraints,
                                                  fe.component_mask(y_displacement));
     }
+    {
+      const int boundary_id = 4;
 
-    if (dim==3)
-      {
-        const FEValuesExtractors::Scalar z_displacement(2);
+      if (apply_dirichlet_bc == true)
+        VectorTools::interpolate_boundary_values(dof_handler_ref,
+                                                 boundary_id,
+                                                 ZeroFunction<dim>(n_components),
+                                                 constraints,
+                                                 fe.component_mask(z_displacement));
+      else
+        VectorTools::interpolate_boundary_values(dof_handler_ref,
+                                                 boundary_id,
+                                                 ZeroFunction<dim>(n_components),
+                                                 constraints,
+                                                 fe.component_mask(z_displacement));
+    }
+    {
+      const int boundary_id = 5;
 
-        {
-          const int boundary_id = 3;
+      if (apply_dirichlet_bc == true)
+        VectorTools::interpolate_boundary_values(dof_handler_ref,
+                                                 boundary_id,
+                                                 ZeroFunction<dim>(n_components),
+                                                 constraints,
+                                                 (fe.component_mask(x_displacement)
+                                                  |
+                                                  fe.component_mask(y_displacement)));
+      else
+        VectorTools::interpolate_boundary_values(dof_handler_ref,
+                                                 boundary_id,
+                                                 ZeroFunction<dim>(n_components),
+                                                 constraints,
+                                                 (fe.component_mask(x_displacement)
+                                                  |
+                                                  fe.component_mask(y_displacement)));
+    }
+    {
+      const int boundary_id = 6;
 
-          if (apply_dirichlet_bc == true)
-            VectorTools::interpolate_boundary_values(dof_handler_ref,
-                                                     boundary_id,
-                                                     ZeroFunction<dim>(n_components),
-                                                     constraints,
-                                                     (fe.component_mask(x_displacement)
-                                                      |
-                                                      fe.component_mask(z_displacement)));
-          else
-            VectorTools::interpolate_boundary_values(dof_handler_ref,
-                                                     boundary_id,
-                                                     ZeroFunction<dim>(n_components),
-                                                     constraints,
-                                                     (fe.component_mask(x_displacement)
-                                                      |
-                                                      fe.component_mask(z_displacement)));
-        }
-        {
-          const int boundary_id = 4;
-
-          if (apply_dirichlet_bc == true)
-            VectorTools::interpolate_boundary_values(dof_handler_ref,
-                                                     boundary_id,
-                                                     ZeroFunction<dim>(n_components),
-                                                     constraints,
-                                                     fe.component_mask(z_displacement));
-          else
-            VectorTools::interpolate_boundary_values(dof_handler_ref,
-                                                     boundary_id,
-                                                     ZeroFunction<dim>(n_components),
-                                                     constraints,
-                                                     fe.component_mask(z_displacement));
-        }
-
-        {
-          const int boundary_id = 6;
-
-          if (apply_dirichlet_bc == true)
-            VectorTools::interpolate_boundary_values(dof_handler_ref,
-                                                     boundary_id,
-                                                     ZeroFunction<dim>(n_components),
-                                                     constraints,
-                                                     (fe.component_mask(x_displacement)
-                                                      |
-                                                      fe.component_mask(z_displacement)));
-          else
-            VectorTools::interpolate_boundary_values(dof_handler_ref,
-                                                     boundary_id,
-                                                     ZeroFunction<dim>(n_components),
-                                                     constraints,
-                                                     (fe.component_mask(x_displacement)
-                                                      |
-                                                      fe.component_mask(z_displacement)));
-        }
-      }
-    else
-      {
-        {
-          const int boundary_id = 3;
-
-          if (apply_dirichlet_bc == true)
-            VectorTools::interpolate_boundary_values(dof_handler_ref,
-                                                     boundary_id,
-                                                     ZeroFunction<dim>(n_components),
-                                                     constraints,
-                                                     (fe.component_mask(x_displacement)));
-          else
-            VectorTools::interpolate_boundary_values(dof_handler_ref,
-                                                     boundary_id,
-                                                     ZeroFunction<dim>(n_components),
-                                                     constraints,
-                                                     (fe.component_mask(x_displacement)));
-        }
-        {
-          const int boundary_id = 6;
-
-          if (apply_dirichlet_bc == true)
-            VectorTools::interpolate_boundary_values(dof_handler_ref,
-                                                     boundary_id,
-                                                     ZeroFunction<dim>(n_components),
-                                                     constraints,
-                                                     (fe.component_mask(x_displacement)));
-          else
-            VectorTools::interpolate_boundary_values(dof_handler_ref,
-                                                     boundary_id,
-                                                     ZeroFunction<dim>(n_components),
-                                                     constraints,
-                                                     (fe.component_mask(x_displacement)));
-        }
-      }
+      if (apply_dirichlet_bc == true)
+        VectorTools::interpolate_boundary_values(dof_handler_ref,
+                                                 boundary_id,
+                                                 ZeroFunction<dim>(n_components),
+                                                 constraints,
+                                                 (fe.component_mask(x_displacement)
+                                                  |
+                                                  fe.component_mask(y_displacement)));
+      else
+        VectorTools::interpolate_boundary_values(dof_handler_ref,
+                                                 boundary_id,
+                                                 ZeroFunction<dim>(n_components),
+                                                 constraints,
+                                                 (fe.component_mask(x_displacement)
+                                                  |
+                                                  fe.component_mask(y_displacement)));
+    }
 
     constraints.close();
   }
@@ -3205,7 +3244,7 @@ namespace Step44
     data_out.build_patches(q_mapping, degree);
 
     std::ostringstream filename;
-    filename << "solution-" << dim << "d-" << time.get_timestep() << ".vtk";
+    filename << "solution-" << time.get_timestep() << ".vtk";
 
     std::ofstream output(filename.str().c_str());
     data_out.write_vtk(output);
@@ -3224,9 +3263,8 @@ int main ()
 
   try
     {
-      const unsigned int dim = 3;
-      Solid<dim> solid("parameters.prm");
-      solid.run();
+      Solid<3> solid_3d("parameters.prm");
+      solid_3d.run();
     }
   catch (std::exception &exc)
     {
