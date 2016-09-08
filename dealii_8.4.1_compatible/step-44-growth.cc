@@ -568,7 +568,7 @@ namespace Step44
                               const double J_tilde_in)
     {
       det_Fe = determinant(F_e);
-      b_bar = std::pow(det_F, -2.0 / 3.0) * symmetrize(F_e * transpose(F_e));
+      b_bar = std::pow(det_Fe, -2.0 / 3.0) * symmetrize(F_e * transpose(F_e));
       p_tilde = p_tilde_in;
       J_tilde = J_tilde_in;
 
@@ -612,9 +612,9 @@ namespace Step44
 
     // The next few functions return various data that we choose to store with
     // the material:
-    double get_det_F() const
+    double get_det_Fe() const
     {
-      return det_F;
+      return det_Fe;
     }
 
     double get_p_tilde() const
@@ -634,7 +634,7 @@ namespace Step44
     const double c_1;
 
     // Model specific data that is convenient to store with the material:
-    double det_F;
+    double det_Fe;
     double p_tilde;
     double J_tilde;
     SymmetricTensor<2, dim> b_bar;
@@ -1229,7 +1229,7 @@ namespace Step44
         solution_n += solution_delta;
         output_results();
         
-        grow();//this will update quadrature point history and associated material object
+        update_qph_for_growth();//this will update quadrature point history and associated material object
                //therefore the system is off-balance again
         
         solution_delta = 0.0;
@@ -1856,46 +1856,30 @@ namespace Step44
 // current deformation and stress is already stored in quadrature point history.
 // F_g is calculated, F_e is deduced, and stress and elasticity tensor are updated.
   template <int dim>
-  void
-  Solid<dim>::update_qph_for_growth_one_cell(const typename DoFHandler<dim>::active_cell_iterator &cell,
-                                              ScratchData_UQPH &scratch,
-                                              PerTaskData_UQPH &/*data*/)
+  void Solid<dim>::update_qph_for_growth()
   {
-    PointHistory<dim> *lqph =
-      reinterpret_cast<PointHistory<dim>*>(cell->user_pointer());
-
-    Assert(lqph >= &quadrature_point_history.front(), ExcInternalError());
-    Assert(lqph <= &quadrature_point_history.back(), ExcInternalError());
-
-    Assert(scratch.solution_grads_u_total.size() == n_q_points,
-           ExcInternalError());
-    Assert(scratch.solution_values_p_total.size() == n_q_points,
-           ExcInternalError());
-    Assert(scratch.solution_values_J_total.size() == n_q_points,
-           ExcInternalError());
-
-    scratch.reset();
-
-    // We first need to find the values and gradients at quadrature points
-    // inside the current cell and then we update each local QP using the
-    // displacement gradient and total pressure and dilatation solution
-    // values:
-    scratch.fe_values_ref.reinit(cell);
-    scratch.fe_values_ref[u_fe].get_function_gradients(scratch.solution_total,
-                                                       scratch.solution_grads_u_total);
-    scratch.fe_values_ref[p_fe].get_function_values(scratch.solution_total,
-                                                    scratch.solution_values_p_total);
-    scratch.fe_values_ref[J_fe].get_function_values(scratch.solution_total,
-                                                    scratch.solution_values_J_total);
-
-    for (unsigned int q_point = 0; q_point < n_q_points; ++q_point){
-      tau = lqph[q_point].get_tau();
-      F_g = calculate_Fg(tau);
-      lqph[q_point].update_values_for_growth(F_g,
-                                  scratch.solution_values_p_total[q_point],
-                                  scratch.solution_values_J_total[q_point]);
+    timer.enter_subsection("Update QPH data for growth");
+    std::cout << " UQPHgrowth " << std::flush;
+    for(typename DoFHandler<dim>::active_cell_iterator cell = dof_handler_ref.begin_active();
+        cell != dof_handler_ref.end(); cell++){
+      PointHistory<dim> *lqph =
+          reinterpret_cast<PointHistory<dim>*>(cell->user_pointer());
+      Assert(lqph >= &quadrature_point_history.front(), ExcInternalError());
+      Assert(lqph <= &quadrature_point_history.back(), ExcInternalError());
+// First find F_g, then we update each local QP using the
+// F_g and total pressure and dilatation solution
+// values:
+      for (unsigned int q_point = 0; q_point < n_q_points; ++q_point){
+        SymmetricTensor<2, dim> tau = lqph[q_point].get_tau();
+        Tensor<2, dim> F_g = calculate_Fg(tau);
+        lqph[q_point].update_values_after_growth(F_g,
+        lqph[q_point].get_p_tilde(),
+        lqph[q_point].get_J_tilde());
+      }
     }
+    timer.leave_subsection();
   }
+ 
 
 
 // @sect4{Solid::solve_nonlinear_timestep}
