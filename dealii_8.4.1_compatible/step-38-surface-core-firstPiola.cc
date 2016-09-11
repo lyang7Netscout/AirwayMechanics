@@ -65,6 +65,8 @@ namespace surface_growth
       double lambda = 0.3;
       double mu_s = 0.5;
       double lambda_s = 0.3;
+      int poly_degree = 2;
+      int quad_order = 3;
   }
 
 // @sect3{Some standard tensors}
@@ -122,10 +124,12 @@ namespace surface_growth
 
       void update_material_data(const Tensor<2, dim> &F_)=0;
 
-      SymmetricTensor<2, dim> get_P()=0;
+      Tensor<2, dim> get_P()=0;
 
       SymmetricTensor<4, dim> get_A()=0; //fourth-order elasticity tensor in the reference setting
 
+      double get_dPsi_vol_dJ() const{ return 0.0; }
+      
       double get_d2Psi_vol_dJ2() const{ return 0.0; }
 
   private:
@@ -178,11 +182,13 @@ namespace surface_growth
       }
   private:
       Tensor<2, dim> get_P_iso(){
-          return c_1 * F;
+          return mu * F;
       }
 
       Tensor<2, dim> get_P_vol(){
-          return p_tilde * det_F * StandardTensors<dim>::I * transform(F_inv);//This is using P = tau * transform(F_inv)
+          //return p_tilde * det_F * StandardTensors<dim>::I * transform(F_inv);
+          //using P = tau * transform(F_inv)
+          return ( -mu + lambda*log(det_F) ) * transform(F_inv);
       }
 
       SymmetricTensor<4, dim> get_A_iso(){
@@ -191,13 +197,12 @@ namespace surface_growth
           const SymmetricTensor<4, dim> F_invT_x_F_inv =
                   outer_product(transform(F_inv), F_inv);
 
-          return mu * StandardTensors<dim>::IxI
-                  + (mu - lambda*log(det_F) ) * F_invT_x_F_inv
+          return (mu - lambda*log(det_F) ) * F_invT_x_F_inv
                   + lambda * F_invT_x_F_invT;
       }
 
       SymmetricTensor<4, dim> get_A_vol(){
-          return p_tilde * det_F * ( StandardTensors<dim>::IxI - 2.0 * StandardTensors<dim>::II );
+          return mu * StandardTensors<dim>::IxI;
       }
 
   protected:
@@ -412,13 +417,13 @@ namespace surface_growth
   // DoF handler to the triangulation:
   template <int dim>
   SurfaceCoreProblem<dim>::
-  SurfaceCoreProblem (const unsigned degree)
+  SurfaceCoreProblem ()
     :
-    fe (degree),
+    fe (parameters::poly_degree),
     dof_handler(triangulation),
     mapping (degree),
-    qf_cell (fe.degree * 2),
-    qf_face (fe.degree * 2),
+    qf_cell (parameters::quad_order),
+    qf_face (parameters::quad_order),
     n_q_points (qf_cell.size()),
     n_q_points_f (qf_face.size())//quadrature points on cell face doesn't coincide with quadrature points of cell
                                  //but dofs on cell face is part of dofs of cell
@@ -499,6 +504,7 @@ namespace surface_growth
       FEFaceValues<dim> fe_face_values (fe, qf_face,
                                  update_values              |
                                  update_gradients           |
+                                 update_normals             |
                                  update_quadrature_points   |
                                  update_JxW_value);
       const Vector<double> solution_total(get_total_solution(solution_delta));
@@ -632,6 +638,7 @@ namespace surface_growth
                                  update_values              |
                                  update_gradients           |
                                  update_quadrature_points   |
+                                 update_normal_vectors      |
                                  update_JxW_value);
 
     const unsigned int        dofs_per_cell = fe.dofs_per_cell;
@@ -720,11 +727,12 @@ namespace surface_growth
                 fe_face_values.reinit(cell, face);
                 //**************initialize shape_value and shape_grad*************************
                 for (unsigned int f_q_point=0; f_q_point < n_q_points_f; ++f_q_point){
-                    const Tensor<2, dim> F_inv_f = lqph[f_q_point].get_F_inv();
                     for (unsigned int k=0; k < fe.dofs_per_face; ++k){
-                        grad_Nx_f[f_q_point][k] = fe_face_values.gradient(k, f_q_point) * F_inv;
-                                                  //does this represent surface gradient(tangent derivative)?
-                        symm_grad_Nx_f[f_q_point][k] = symmetrize(grad_Nx_f[f_q_point][k]);
+                        Grad_Nx_f[f_q_point][k] = fe_face_values.gradient(face_to_cell_dof(k), f_q_point);
+                                                  //This doesn't represent surface gradient(tangent derivative)
+                                                  //but we are not using surface gradient either
+                                                  //shape_function at one dofs_per_face 
+                        symm_Grad_Nx_f[f_q_point][k] = symmetrize(grad_Nx_f[f_q_point][k]);
                 }
 
                 for (unsigned int f_q_point = 0; f_q_point < n_q_points_f; ++f_q_point){
@@ -813,7 +821,7 @@ namespace surface_growth
   }
   
   template <int dim>
-  void SurfaceCoreProblem<dim>::solve_linear_system ()
+  void SurfaceCoreProblem<dim>::solve_linear_system (Vector<double>& newton_update)
   {
     SolverControl solver_control (solution.size(),
                                   1e-7 * system_rhs.l2_norm());
@@ -822,7 +830,7 @@ namespace surface_growth
     PreconditionSSOR<> preconditioner;
     preconditioner.initialize(system_matrix, 1.2);
 
-    cg.solve (system_matrix, solution, system_rhs,
+    cg.solve (system_matrix, newton_update, system_rhs,
               preconditioner);
   }
 
