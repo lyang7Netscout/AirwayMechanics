@@ -572,7 +572,7 @@ namespace Step44
       p_tilde = p_tilde_in;
       J_tilde = J_tilde_in;
 
-      Assert(det_F > 0, ExcInternalError());
+      Assert(det_Fe > 0, ExcInternalError());
     }
 
     // The second function determines the Kirchhoff stress $\boldsymbol{\tau}
@@ -758,11 +758,11 @@ namespace Step44
     // general, the conversion to SymmetricTensor will fail. We can avoid this
     // back and forth by converting $I$ to Tensor first, and then performing
     // the addition as between nonsymmetric tensors:
-    void update_values (const Tensor<2, dim> &Grad_u_n,
+    double update_values (const Tensor<2, dim> &Grad_u_n,
                         const double p_tilde,
                         const double J_tilde)
     {
-      F = Tensor<2,dim>(StandardTensor<dim>::I) + Grad_u_n;
+      F = Tensor<2,dim>(StandardTensors<dim>::I) + Grad_u_n;
       F_e = F*invert(F_g);//before growth, during all steps of solve_nonlinear_timestep(), F_e = F
                           //after grwoth, F_g is stored, during the second solve_nonlinear_timestep(), F_e = F/F_g
       material->update_material_data(F_e, p_tilde, J_tilde);
@@ -778,20 +778,22 @@ namespace Step44
       Jc = material->get_Jc();
       dPsi_vol_dJ = material->get_dPsi_vol_dJ();
       d2Psi_vol_dJ2 = material->get_d2Psi_vol_dJ2();
-      
+      return determinant(F); 
     }
 
-    void update_values_after_growth (const Tensor<2, dim> &F_g_,
-                        const double p_tilde,
-                        const double J_tilde)
+    void update_values_for_growth (const Tensor<2, dim> &F_g_)
     {
 
-      F_g = F_g_;
+      F_g = F_g * F_g_;
       F_e = F*invert(F_g);//F is already stored in qph
-      material->update_material_data(F_e, p_tilde, J_tilde);
+      std::cout << "det_F_e = " << determinant(F_e) << std::endl;
+      double J_tilde = get_J_tilde();
+      double p_tilde = get_p_tilde();
+      material->update_material_data(F_e, p_tilde, J_tilde/determinant(F_g)/2.0);
 
-
+      //std::cout << tau[0][0] << " " << tau[0][1] << std::endl;
       tau = material->get_tau();
+      //std::cout << "after growth" << tau[0][0] << " " << tau[0][1] << std::endl;
       Jc = material->get_Jc();
       dPsi_vol_dJ = material->get_dPsi_vol_dJ();
       d2Psi_vol_dJ2 = material->get_d2Psi_vol_dJ2();
@@ -807,7 +809,12 @@ namespace Step44
 
     double get_det_F() const
     {
-      return material->get_det_F();
+      return determinant(F);
+    }
+
+    double get_det_Fe() const
+    {
+      return material->get_det_Fe();
     }
 
     const Tensor<2, dim> &get_F_inv() const
@@ -991,8 +998,10 @@ namespace Step44
     get_total_solution(const BlockVector<double> &solution_delta) const;
 
     void
-    output_results() const;
+    output_results(std::string suffix) const;
 
+    void
+    output_results_temp(int iteration, BlockVector<double> solution_temp);
     // Finally, some member variables that describe the current state: A
     // collection of the parameters used to describe the problem setup...
     Parameters::AllParameters        parameters;
@@ -1209,7 +1218,7 @@ namespace Step44
                             J_mask,
                             solution_n);
     }
-    output_results();
+    output_results("");
     time.increment();
 
     // We then declare the incremental solution update $\varDelta
@@ -1227,7 +1236,7 @@ namespace Step44
         // \varDelta \mathbf{\Xi}$...
         solve_nonlinear_timestep(solution_delta);
         solution_n += solution_delta;
-        output_results();
+        output_results("");
         
         update_qph_for_growth();//this will update quadrature point history and associated material object
                //therefore the system is off-balance again
@@ -1235,7 +1244,7 @@ namespace Step44
         solution_delta = 0.0;
         solve_nonlinear_timestep(solution_delta);
         solution_n += solution_delta;
-        output_results();
+        output_results("growth");
 
 
         time.increment();
@@ -1846,40 +1855,41 @@ namespace Step44
     scratch.fe_values_ref[J_fe].get_function_values(scratch.solution_total,
                                                     scratch.solution_values_J_total);
 
-    for (unsigned int q_point = 0; q_point < n_q_points; ++q_point)
-      lqph[q_point].update_values(scratch.solution_grads_u_total[q_point],
+    double det_F = 0;
+    for (unsigned int q_point = 0; q_point < n_q_points; ++q_point){
+    
+      double det_F_qpoint = lqph[q_point].update_values(scratch.solution_grads_u_total[q_point],
                                   scratch.solution_values_p_total[q_point],
                                   scratch.solution_values_J_total[q_point]);
+      det_F += det_F_qpoint;
+    }
+    det_F /= n_q_points;
+    //std::cout<<"update_qph_one_cell: det_F = " << det_F << std::endl;
   }
   
 // Now we describe how we grow an FE based on stress environment.
 // current deformation and stress is already stored in quadrature point history.
 // F_g is calculated, F_e is deduced, and stress and elasticity tensor are updated.
   template <int dim>
-  void Solid<dim>::update_qph_for_growth()
+  void
+  Solid<dim>::update_qph_for_growth()
   {
     timer.enter_subsection("Update QPH data for growth");
     std::cout << " UQPHgrowth " << std::flush;
     for(typename DoFHandler<dim>::active_cell_iterator cell = dof_handler_ref.begin_active();
         cell != dof_handler_ref.end(); cell++){
-      PointHistory<dim> *lqph =
-          reinterpret_cast<PointHistory<dim>*>(cell->user_pointer());
-      Assert(lqph >= &quadrature_point_history.front(), ExcInternalError());
-      Assert(lqph <= &quadrature_point_history.back(), ExcInternalError());
-// First find F_g, then we update each local QP using the
-// F_g and total pressure and dilatation solution
-// values:
+      PointHistory<dim> *lqph = reinterpret_cast<PointHistory<dim>*>(cell->user_pointer());
+      // First find F_g, then we update each local QP using the
+      // F-g and total pressure and dilatation solution
+      // values:
       for (unsigned int q_point = 0; q_point < n_q_points; ++q_point){
         SymmetricTensor<2, dim> tau = lqph[q_point].get_tau();
-        Tensor<2, dim> F_g = calculate_Fg(tau);
-        lqph[q_point].update_values_after_growth(F_g,
-        lqph[q_point].get_p_tilde(),
-        lqph[q_point].get_J_tilde());
+        Tensor<2, dim> F_g = 1.05 * Tensor<2, dim>(StandardTensors<dim>::I);//calculate_Fg(tau);
+        lqph[q_point].update_values_for_growth(F_g);
       }
     }
     timer.leave_subsection();
   }
- 
 
 
 // @sect4{Solid::solve_nonlinear_timestep}
@@ -1968,6 +1978,9 @@ namespace Step44
 
         solution_delta += newton_update;
         update_qph_incremental(solution_delta);
+        BlockVector<double> solution_temp(solution_n);
+        solution_temp += solution_delta;
+        output_results_temp(newton_iteration, solution_temp );
 
         std::cout << " | " << std::fixed << std::setprecision(3) << std::setw(7)
                   << std::scientific << lin_solver_output.first << "  "
@@ -2261,6 +2274,7 @@ namespace Step44
         const SymmetricTensor<4, dim> Jc = lqph[q_point].get_Jc();
         const double d2Psi_vol_dJ2       = lqph[q_point].get_d2Psi_vol_dJ2();
         const double det_F               = lqph[q_point].get_det_F();
+        const double det_Fe              = lqph[q_point].get_det_Fe();
 
         // Next we define some aliases to make the assembly process easier to
         // follow
@@ -2297,7 +2311,7 @@ namespace Step44
                 // Next is the $\mathsf{\mathbf{k}}_{ \widetilde{p} \mathbf{u}}$ contribution
                 else if ((i_group == p_dof) && (j_group == u_dof))
                   {
-                    data.cell_matrix(i, j) += N[i] * det_F
+                    data.cell_matrix(i, j) += N[i] * det_Fe
                                               * (symm_grad_Nx[j]
                                                  * StandardTensors<dim>::I)
                                               * JxW;
@@ -3194,7 +3208,7 @@ namespace Step44
 // using ParaView or Visit. The method is similar to that shown in previous
 // tutorials so will not be discussed in detail.
   template <int dim>
-  void Solid<dim>::output_results() const
+  void Solid<dim>::output_results(std::string suffix) const
   {
     DataOut<dim> data_out;
     std::vector<DataComponentInterpretation::DataComponentInterpretation>
@@ -3228,7 +3242,48 @@ namespace Step44
     data_out.build_patches(q_mapping, degree);
 
     std::ostringstream filename;
-    filename << "solution-" << time.get_timestep() << ".vtk";
+    filename << "solution-" << time.get_timestep() << suffix << ".vtk";
+
+    std::ofstream output(filename.str().c_str());
+    data_out.write_vtk(output);
+  }
+
+  template <int dim>
+  void Solid<dim>::output_results_temp(int iteration, BlockVector<double> solution_temp)
+  {
+    DataOut<dim> data_out;
+    std::vector<DataComponentInterpretation::DataComponentInterpretation>
+    data_component_interpretation(dim,
+                                  DataComponentInterpretation::component_is_part_of_vector);
+    data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
+    data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
+
+    std::vector<std::string> solution_name(dim, "displacement");
+    solution_name.push_back("pressure");
+    solution_name.push_back("dilatation");
+
+    data_out.attach_dof_handler(dof_handler_ref);
+    data_out.add_data_vector(solution_temp,
+                             solution_name,
+                             DataOut<dim>::type_dof_data,
+                             data_component_interpretation);
+
+    // Since we are dealing with a large deformation problem, it would be nice
+    // to display the result on a displaced grid!  The MappingQEulerian class
+    // linked with the DataOut class provides an interface through which this
+    // can be achieved without physically moving the grid points in the
+    // Triangulation object ourselves.  We first need to copy the solution to
+    // a temporary vector and then create the Eulerian mapping. We also
+    // specify the polynomial degree to the DataOut object in order to produce
+    // a more refined output data set when higher order polynomials are used.
+    Vector<double> soln(solution_temp.size());
+    for (unsigned int i = 0; i < soln.size(); ++i)
+      soln(i) = solution_temp(i);
+    MappingQEulerian<dim> q_mapping(degree, dof_handler_ref, soln);
+    data_out.build_patches(q_mapping, degree);
+
+    std::ostringstream filename;
+    filename << "solution-" << time.get_timestep() << "-" << iteration << ".vtk";
 
     std::ofstream output(filename.str().c_str());
     data_out.write_vtk(output);
