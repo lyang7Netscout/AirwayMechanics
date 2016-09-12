@@ -188,14 +188,14 @@ namespace surface_growth
       Tensor<2, dim> get_P_vol(){
           //return p_tilde * det_F * StandardTensors<dim>::I * transform(F_inv);
           //using P = tau * transform(F_inv)
-          return ( -mu + lambda*log(det_F) ) * transform(F_inv);
+          return ( -mu + lambda*log(det_F) ) * transpose(F_inv);
       }
 
       SymmetricTensor<4, dim> get_A_iso(){
           const SymmetricTensor<4, dim> F_invT_x_F_invT =
-                  outer_product(transform(F_inv), transform(F_inv));
+                  outer_product(transpose(F_inv), transpose(F_inv));
           const SymmetricTensor<4, dim> F_invT_x_F_inv =
-                  outer_product(transform(F_inv), F_inv);
+                  outer_product(transpose(F_inv), F_inv);
 
           return (mu - lambda*log(det_F) ) * F_invT_x_F_inv
                   + lambda * F_invT_x_F_invT;
@@ -255,14 +255,14 @@ namespace surface_growth
           const Tensor<4, dim> I_hat_x_I_hat =
                   outer_product(I_hat, I_hat);
           const SymmetricTensor<4, dim> F_invT_x_F_invT =
-                  outer_product(transform(F_inv), transform(F_inv));
+                  outer_product(transpose(F_inv), transpose(F_inv));
           const SymmetricTensor<4, dim> F_invT_x_F_inv =
-                  outer_product(transform(F_inv), F_inv);
+                  outer_product(transpose(F_inv), F_inv);
 
           const Tensor<2, dim> i_perp =
                   outer_product(F * N, F * N);
           const Tensor<4, dim> i_perp_x_Finv_FinvT =
-                  outer_product(i_perp, F_inv * transform(F_inv));
+                  outer_product(i_perp, F_inv * transpose(F_inv));
           return mu * StandardTensors<dim>::IxI
                   + (mu - lambda*log(det_F) ) * (F_invT_x_F_inv - i_perp_x_Finv_FinvT)
                   + lambda * F_invT_x_F_invT;
