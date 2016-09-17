@@ -8,8 +8,10 @@
 /*    without copyright and license information. Please refer       */
 /*    to the file deal.II/doc/license.html for the  text  and       */
 /*    further information on this license.                          */
-
- 
+/*
+Reference: A viscoelastic model for fiber-reinforced composites at finite strains:
+           Continuum basis, computational aspects and applications. Hozapfel(2001)
+*/
 
 
 
