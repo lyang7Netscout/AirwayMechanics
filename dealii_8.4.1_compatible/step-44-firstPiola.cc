@@ -686,7 +686,13 @@ namespace Step44
 
     Tensor<2, dim> get_P_iso() const
     {
-      return 2 * c_1 * F/ det_F; 
+      Tensor<2, dim> tmp = double_contract<0,0,1,1>(get_P_bar(), Tensor<4,dim>(StandardTensors<dim>::dev_P) );
+      return std::pow(det_F, -1.0/3.0) * tmp; 
+    }
+    
+    Tensor<2, dim> get_P_bar() const
+    {
+      return 2 * c_1 * std::pow(det_F, -1.0/3.0) * F;
     }
 
     // Calculate the volumetric part of the tangent $J
