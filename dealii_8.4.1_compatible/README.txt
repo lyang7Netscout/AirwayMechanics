@@ -12,6 +12,9 @@ step 1: step-44-firstPiola.cc
         For deviatoric tensor: https://en.wikipedia.org/wiki/Cauchy_stress_tensor#Stress_deviator_tensor
         dF/dF = II (4th order identity tensor)
         dPhi/dF = 2* dPhi/db * F
+        db_bar/db = J^(-2/3)*deviatoric tensor (...   )
+        dF_bar/dF = J^(-1/3)*deviatoric tensor (...   )
+        chain rule: d(Phi * B)/dF = Phi * dB/dF + outer_product(B, dPhi/dF)
         
 step 2: step-44-growth.cc
         needs to rework everything. All derivations are w.r.t F_e, but then transformation between configurations are through F.
