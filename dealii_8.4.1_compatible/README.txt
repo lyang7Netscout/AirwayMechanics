@@ -1,7 +1,7 @@
 step 1: step-44-firstPiola.cc 
         tau_vol               ...          Done
         tau_bar -> tau_iso    ...          Done
-        Jc_vol                ...          Done
+        Jc_vol                ...          Done (typo in step-44 Jc_vol  p_hat)
         Jc_iso                ...          Done
         P_vol                 ...          Done
         P_bar -> P_iso        ...          Done
