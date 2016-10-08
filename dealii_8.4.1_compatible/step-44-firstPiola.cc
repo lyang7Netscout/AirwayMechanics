@@ -721,23 +721,32 @@ namespace Step44
                
     Tensor<4, dim> get_A_iso() const
     {
-
-      return 2 * c_1 * StandardTensors<dim>::IxI;
+      Tensor<2, dim> F_inv = invert(F);
+      Tensor<2, dim> tmp1 = double_contract<0,0,1,1>(F, Tensor<4, dim>(StandardTensors<dim>::dev_P));
+      Tensor<4, dim> tmp2 = outer_product(tmp1, transpose(F_inv));
+      return -4/3 * c_1 * std::pow(det_F, -2.0/3.0) * tmp2 + 2 * c_1 * std::pow(det_F, -2.0/3.0) * StandardTensors<dim>::dev_P;
     }
 
-    // Calculate the isochoric part of the tangent $J
-    // \mathfrak{c}_\textrm{iso}$:
     Tensor<4, dim> get_A_vol() const
     {
       Tensor<2, dim> F_inv = invert(F);
-      const Tensor<4, dim> F_invT_x_F_invT = 
+      const Tensor<4, dim> F_invT_x_F_invT =
               outer_product(transpose(F_inv), transpose(F_inv));
-      const Tensor<4, dim> F_invT_x_F_inv = 
-              outer_product(transpose(F_inv), F_inv);
+      Tensor<4, dim> II_T_Finv;
+      for(int i = 0; i < dim; i++){
+          for(int j = 0; j < dim; j++){
+              for(int k = 0; k < dim; k++){
+                  for(int l = 0; l < dim; l++){
+                      II_T_Finv[i][j][k][l] = F_inv[i][l] * F_inv[j][k];
+                  }
+              }
+          }
+      }
 
-      return kappa/2 * ( det_F * det_F - 1 ) * F_invT_x_F_inv
-              + kappa * det_F * F_invT_x_F_invT; 
+      return -p_tilde * det_F * II_T_Finv
+              + p_tilde * det_F * F_invT_x_F_invT;
     }
+
 
     // Calculate the fictitious elasticity tensor $\overline{\mathfrak{c}}$.
     // For the material model chosen this is simply zero:
