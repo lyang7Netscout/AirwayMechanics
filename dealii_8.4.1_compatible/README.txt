@@ -23,6 +23,10 @@ step 1: step-44-firstPiola.cc
         chain rule: d(Phi * B)/dF = Phi * dB/dF + outer_product(B, dPhi/dF)
         Also see p29 p35 [3] for many formulas (many typos)
         
+        step-44-secondPiola.cc
+        push-forward of elasticity tensor  c_spatial[IJKL] = F[Ii]F[Jj]F[Kk]F[Ll]Cmaterial[ijkl]
+        AB:C = transpose(C)*A:transpose(B) = B*transpose(C):transpose(A)
+        
 References:
 1)http://homepages.engineering.auckland.ac.nz/~pkel015/SolidMechanicsBooks/Part_III/Chapter_1_Vectors_Tensors/Vectors_Tensors_15_Tensor_Calculus_2.pdf
 2)http://www.ce.berkeley.edu/~sanjay/ce231mse211/symidentity.pdf
