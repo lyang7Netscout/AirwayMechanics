@@ -631,7 +631,7 @@ namespace Step44
       return J_tilde;
     }
 
-    bool testConsistency()
+    void testConsistency()
     {
       Tensor<2, dim> S_vol = get_S_vol();
       Tensor<2, dim> tau_vol = get_tau_vol();
@@ -681,8 +681,8 @@ namespace Step44
                               }
                           }
                       }
-                      assert( abs( Jc_vol[i][j][k][l] - temp) <= 0.01 * abs(temp) ); 
-                      assert( abs( Jc_iso[i][j][k][l] - temp2 ) <= 0.01 * abs(temp2) );
+                      assert( abs( Jc_vol[i][j][k][l] - temp) <= 0.1 * abs(temp) ); 
+                      assert( abs( Jc_iso[i][j][k][l] - temp2 ) <= 0.1 * abs(temp2) );
                   }
               }
           }
@@ -911,10 +911,10 @@ namespace Step44
       :
       material(NULL),
       F_inv(StandardTensors<dim>::I),
-      tau(SymmetricTensor<2, dim>()),
+      S(SymmetricTensor<2, dim>()),
       d2Psi_vol_dJ2(0.0),
       dPsi_vol_dJ(0.0),
-      Jc(SymmetricTensor<4, dim>())
+      Cmaterial(SymmetricTensor<4, dim>())
     {}
 
     virtual ~PointHistory()
@@ -953,8 +953,7 @@ namespace Step44
                         const double p_tilde,
                         const double J_tilde)
     {
-      const Tensor<2, dim> F
-        = (Tensor<2, dim>(StandardTensors<dim>::I) +
+      F  = (Tensor<2, dim>(StandardTensors<dim>::I) +
            Grad_u_n);
       material->update_material_data(F, p_tilde, J_tilde);
 
@@ -965,8 +964,8 @@ namespace Step44
       // We also store the inverse of the deformation gradient since we
       // frequently use it:
       F_inv = invert(F);
-      tau = material->get_tau();
-      Jc = material->get_Jc();
+      S = material->get_S();
+      Cmaterial = material->get_C();
       dPsi_vol_dJ = material->get_dPsi_vol_dJ();
       d2Psi_vol_dJ2 = material->get_d2Psi_vol_dJ2();
       material->testConsistency();
@@ -989,6 +988,11 @@ namespace Step44
       return F_inv;
     }
 
+    const Tensor<2, dim> &get_F() const
+    {
+      return F;
+    }
+
     // ...and the kinetic variables.  These are used in the material and
     // global tangent matrix and residual assembly operations:
     double get_p_tilde() const
@@ -996,9 +1000,9 @@ namespace Step44
       return material->get_p_tilde();
     }
 
-    const SymmetricTensor<2, dim> &get_tau() const
+    const SymmetricTensor<2, dim> &get_S() const
     {
-      return tau;
+      return S;
     }
 
     double get_dPsi_vol_dJ() const
@@ -1012,11 +1016,10 @@ namespace Step44
     }
 
     // And finally the tangent:
-    const SymmetricTensor<4, dim> &get_Jc() const
+    const SymmetricTensor<4, dim> &get_C() const
     {
-      return Jc;
+      return Cmaterial;
     }
-
     // In terms of member functions, this class stores for the quadrature
     // point it represents a copy of a material type in case different
     // materials are used in different regions of the domain, as well as the
@@ -1024,14 +1027,15 @@ namespace Step44
   private:
     Material_Compressible_Neo_Hook_Three_Field<dim> *material;
 
+    Tensor<2, dim> F;
     Tensor<2, dim> F_inv;
 
     // ... and stress-type variables along with the tangent $J\mathfrak{c}$:
-    SymmetricTensor<2, dim> tau;
+    SymmetricTensor<2, dim> S;
     double                  d2Psi_vol_dJ2;
     double                  dPsi_vol_dJ;
 
-    SymmetricTensor<4, dim> Jc;
+    SymmetricTensor<4, dim> Cmaterial;
   };
 
 
@@ -1448,8 +1452,8 @@ namespace Step44
     FEValues<dim> fe_values_ref;
 
     std::vector<std::vector<double> >                   Nx;
-    std::vector<std::vector<Tensor<2, dim> > >          grad_Nx;
-    std::vector<std::vector<SymmetricTensor<2, dim> > > symm_grad_Nx;
+    std::vector<std::vector<Tensor<2, dim> > >          Grad_Nx;
+    std::vector<std::vector<SymmetricTensor<2, dim> > > symm_Grad_Nx;
 
     ScratchData_K(const FiniteElement<dim> &fe_cell,
                   const QGauss<dim> &qf_cell,
@@ -1458,9 +1462,9 @@ namespace Step44
       fe_values_ref(fe_cell, qf_cell, uf_cell),
       Nx(qf_cell.size(),
          std::vector<double>(fe_cell.dofs_per_cell)),
-      grad_Nx(qf_cell.size(),
+      Grad_Nx(qf_cell.size(),
               std::vector<Tensor<2, dim> >(fe_cell.dofs_per_cell)),
-      symm_grad_Nx(qf_cell.size(),
+      symm_Grad_Nx(qf_cell.size(),
                    std::vector<SymmetricTensor<2, dim> >
                    (fe_cell.dofs_per_cell))
     {}
@@ -1471,8 +1475,8 @@ namespace Step44
                     rhs.fe_values_ref.get_quadrature(),
                     rhs.fe_values_ref.get_update_flags()),
       Nx(rhs.Nx),
-      grad_Nx(rhs.grad_Nx),
-      symm_grad_Nx(rhs.symm_grad_Nx)
+      Grad_Nx(rhs.Grad_Nx),
+      symm_Grad_Nx(rhs.symm_Grad_Nx)
     {}
 
     void reset()
@@ -1482,15 +1486,15 @@ namespace Step44
       for (unsigned int q_point = 0; q_point < n_q_points; ++q_point)
         {
           Assert( Nx[q_point].size() == n_dofs_per_cell, ExcInternalError());
-          Assert( grad_Nx[q_point].size() == n_dofs_per_cell,
+          Assert( Grad_Nx[q_point].size() == n_dofs_per_cell,
                   ExcInternalError());
-          Assert( symm_grad_Nx[q_point].size() == n_dofs_per_cell,
+          Assert( symm_Grad_Nx[q_point].size() == n_dofs_per_cell,
                   ExcInternalError());
           for (unsigned int k = 0; k < n_dofs_per_cell; ++k)
             {
               Nx[q_point][k] = 0.0;
-              grad_Nx[q_point][k] = 0.0;
-              symm_grad_Nx[q_point][k] = 0.0;
+              Grad_Nx[q_point][k] = 0.0;
+              symm_Grad_Nx[q_point][k] = 0.0;
             }
         }
     }
@@ -1526,7 +1530,7 @@ namespace Step44
     FEFaceValues<dim> fe_face_values_ref;
 
     std::vector<std::vector<double> >                   Nx;
-    std::vector<std::vector<SymmetricTensor<2, dim> > > symm_grad_Nx;
+    std::vector<std::vector<Tensor<2, dim> > >          Grad_Nx;
 
     ScratchData_RHS(const FiniteElement<dim> &fe_cell,
                     const QGauss<dim> &qf_cell, const UpdateFlags uf_cell,
@@ -1536,8 +1540,8 @@ namespace Step44
       fe_face_values_ref(fe_cell, qf_face, uf_face),
       Nx(qf_cell.size(),
          std::vector<double>(fe_cell.dofs_per_cell)),
-      symm_grad_Nx(qf_cell.size(),
-                   std::vector<SymmetricTensor<2, dim> >
+      Grad_Nx(qf_cell.size(),
+                   std::vector<Tensor<2, dim> >
                    (fe_cell.dofs_per_cell))
     {}
 
@@ -1550,7 +1554,7 @@ namespace Step44
                          rhs.fe_face_values_ref.get_quadrature(),
                          rhs.fe_face_values_ref.get_update_flags()),
       Nx(rhs.Nx),
-      symm_grad_Nx(rhs.symm_grad_Nx)
+      Grad_Nx(rhs.Grad_Nx)
     {}
 
     void reset()
@@ -1560,12 +1564,12 @@ namespace Step44
       for (unsigned int q_point = 0; q_point < n_q_points; ++q_point)
         {
           Assert( Nx[q_point].size() == n_dofs_per_cell, ExcInternalError());
-          Assert( symm_grad_Nx[q_point].size() == n_dofs_per_cell,
+          Assert( Grad_Nx[q_point].size() == n_dofs_per_cell,
                   ExcInternalError());
           for (unsigned int k = 0; k < n_dofs_per_cell; ++k)
             {
               Nx[q_point][k] = 0.0;
-              symm_grad_Nx[q_point][k] = 0.0;
+              Grad_Nx[q_point][k] = 0.0;
             }
         }
     }
@@ -2350,16 +2354,14 @@ namespace Step44
 
     for (unsigned int q_point = 0; q_point < n_q_points; ++q_point)
       {
-        const Tensor<2, dim> F_inv = lqph[q_point].get_F_inv();
         for (unsigned int k = 0; k < dofs_per_cell; ++k)
           {
             const unsigned int k_group = fe.system_to_base_index(k).first.first;
 
             if (k_group == u_dof)
               {
-                scratch.grad_Nx[q_point][k] = scratch.fe_values_ref[u_fe].gradient(k, q_point)
-                                              * F_inv;
-                scratch.symm_grad_Nx[q_point][k] = symmetrize(scratch.grad_Nx[q_point][k]);
+                scratch.Grad_Nx[q_point][k] = scratch.fe_values_ref[u_fe].gradient(k, q_point);
+                scratch.symm_Grad_Nx[q_point][k] = symmetrize(scratch.Grad_Nx[q_point][k]);
               }
             else if (k_group == p_dof)
               scratch.Nx[q_point][k] = scratch.fe_values_ref[p_fe].value(k,
@@ -2387,19 +2389,19 @@ namespace Step44
     // from our QPH history objects for the current quadrature point.
     for (unsigned int q_point = 0; q_point < n_q_points; ++q_point)
       {
-        const Tensor<2, dim> tau         = lqph[q_point].get_tau();
-        const Tensor<4, dim> Jc          = lqph[q_point].get_Jc();
+        const Tensor<2, dim> S           = lqph[q_point].get_S();
+        const SymmetricTensor<4, dim> Cmaterial   = lqph[q_point].get_C();
         const double d2Psi_vol_dJ2       = lqph[q_point].get_d2Psi_vol_dJ2();
         const double det_F               = lqph[q_point].get_det_F();
+        const Tensor<2, dim> F           = lqph[q_point].get_F();
+        const Tensor<2, dim> F_inv       = lqph[q_point].get_F_inv();
 
         // Next we define some aliases to make the assembly process easier to
         // follow
         const std::vector<double>
         &N = scratch.Nx[q_point];
-        const std::vector<SymmetricTensor<2, dim> >
-        &symm_grad_Nx = scratch.symm_grad_Nx[q_point];
         const std::vector<Tensor<2, dim> >
-        &grad_Nx = scratch.grad_Nx[q_point];
+        &Grad_Nx = scratch.Grad_Nx[q_point];
         const double JxW = scratch.fe_values_ref.JxW(q_point);
 
         for (unsigned int i = 0; i < dofs_per_cell; ++i)
@@ -2418,20 +2420,20 @@ namespace Step44
                 // the local matrix diagonals:
                 if ((i_group == j_group) && (i_group == u_dof))
                   {
-                    //data.cell_matrix(i, j) += symm_grad_Nx[i] * Jc // The material contribution:
-                    //                          * symm_grad_Nx[j] * JxW;
-                    data.cell_matrix(i, j) += double_contract<0,0,1,1>( 
-                           double_contract<0,0,1,1>(grad_Nx[i], Jc), grad_Nx[j]) * JxW;
+                    SymmetricTensor<2, dim> Grad_i_x_F = symmetrize(transpose(F) * Grad_Nx[i]);
+                    SymmetricTensor<2, dim> Grad_j_x_F = symmetrize(transpose(F) * Grad_Nx[j]);
+                    data.cell_matrix(i, j) += Grad_i_x_F * Cmaterial
+                                                * Grad_j_x_F  * JxW;
                     if (component_i == component_j) // geometrical stress contribution
-                      data.cell_matrix(i, j) += grad_Nx[i][component_i] * tau
-                                                * grad_Nx[j][component_j] * JxW;
+                      data.cell_matrix(i, j) += Grad_Nx[i][component_i] * S 
+                                                * Grad_Nx[j][component_j] * JxW;
                   }
                 // Next is the $\mathsf{\mathbf{k}}_{ \widetilde{p} \mathbf{u}}$ contribution
                 else if ((i_group == p_dof) && (j_group == u_dof))
                   {
-                    data.cell_matrix(i, j) += N[i] * det_F 
-                                              * double_contract<0,0,1,1> (grad_Nx[j]
-                                                 , Tensor<2, dim>(StandardTensors<dim>::I))
+                    data.cell_matrix(i, j) += N[i] * det_F
+                                              * double_contract<0,0,1,1>(Grad_Nx[j] * F_inv,
+                                                  Tensor<2, dim>(StandardTensors<dim>::I))
                                               * JxW;
                   }
                 // and lastly the $\mathsf{\mathbf{k}}_{ \widetilde{J} \widetilde{p}}$
@@ -2516,16 +2518,13 @@ namespace Step44
 
     for (unsigned int q_point = 0; q_point < n_q_points; ++q_point)
       {
-        const Tensor<2, dim> F_inv = lqph[q_point].get_F_inv();
-
         for (unsigned int k = 0; k < dofs_per_cell; ++k)
           {
             const unsigned int k_group = fe.system_to_base_index(k).first.first;
 
             if (k_group == u_dof)
-              scratch.symm_grad_Nx[q_point][k]
-                = symmetrize(scratch.fe_values_ref[u_fe].gradient(k, q_point)
-                             * F_inv);
+              scratch.Grad_Nx[q_point][k]
+                = scratch.fe_values_ref[u_fe].gradient(k, q_point);
             else if (k_group == p_dof)
               scratch.Nx[q_point][k] = scratch.fe_values_ref[p_fe].value(k,
                                                                          q_point);
@@ -2539,16 +2538,17 @@ namespace Step44
 
     for (unsigned int q_point = 0; q_point < n_q_points; ++q_point)
       {
-        const SymmetricTensor<2, dim> tau = lqph[q_point].get_tau();
+        const Tensor<2, dim> S = lqph[q_point].get_S();
         const double det_F = lqph[q_point].get_det_F();
+        const Tensor<2, dim> F = lqph[q_point].get_F(); 
         const double J_tilde = lqph[q_point].get_J_tilde();
         const double p_tilde = lqph[q_point].get_p_tilde();
         const double dPsi_vol_dJ = lqph[q_point].get_dPsi_vol_dJ();
 
         const std::vector<double>
         &N = scratch.Nx[q_point];
-        const std::vector<SymmetricTensor<2, dim> >
-        &symm_grad_Nx = scratch.symm_grad_Nx[q_point];
+        const std::vector<Tensor<2, dim> >
+        &Grad_Nx = scratch.Grad_Nx[q_point];
         const double JxW = scratch.fe_values_ref.JxW(q_point);
 
         // We first compute the contributions
@@ -2561,7 +2561,7 @@ namespace Step44
             const unsigned int i_group = fe.system_to_base_index(i).first.first;
 
             if (i_group == u_dof)
-              data.cell_rhs(i) -= (symm_grad_Nx[i] * tau) * JxW;
+              data.cell_rhs(i) -= double_contract<0,0,1,1>(transpose(F)*Grad_Nx[i], S) * JxW;
             else if (i_group == p_dof)
               data.cell_rhs(i) -= N[i] * (det_F - J_tilde) * JxW;
             else if (i_group == J_dof)
