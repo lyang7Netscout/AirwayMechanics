@@ -24,13 +24,19 @@ step 1: step-44-firstPiola.cc
         Also see p29 p35 [3] for many formulas (many typos)
         
         step-44-secondPiola.cc
+        For stress and elasticity-tensor, use invariants as intermediate variables[4]
         push-forward of elasticity tensor  c_spatial[IJKL] = F[Ii]F[Jj]F[Kk]F[Ll]Cmaterial[ijkl]
+        
+        For assembling system tanget and rhs
         AB:C = transpose(C)*A:transpose(B) = B*transpose(C):transpose(A)
+        Another form in [5]
         
 References:
 1)http://homepages.engineering.auckland.ac.nz/~pkel015/SolidMechanicsBooks/Part_III/Chapter_1_Vectors_Tensors/Vectors_Tensors_15_Tensor_Calculus_2.pdf
 2)http://www.ce.berkeley.edu/~sanjay/ce231mse211/symidentity.pdf
 3)Comella thesis.
+4)Mechanics of Deformable Solids
+5)Finite Element Formulations for large Deformation Dynamic Analysis
 
 step 2: step-44-growth.cc
         needs to rework everything. All derivations are w.r.t F_e, but then transformation between configurations are through F.
